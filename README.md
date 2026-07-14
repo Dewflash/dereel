@@ -33,7 +33,9 @@ export DEREEL_TIKTOK_ACCESS_TOKEN="..."
 export DEREEL_INSTAGRAM_ACCESS_TOKEN="..."
 ```
 
-The YouTube adapter uses the video upload API and defaults to private visibility. TikTok uses the supported upload-to-inbox draft path when configured, so the creator still completes the final TikTok editing/posting action. Instagram remains gated on a publicly reachable media URL and the account's publishing permissions.
+The YouTube adapter uses the video upload API and defaults to private visibility. TikTok uses the supported upload-to-inbox draft path when configured, so the creator still completes the final TikTok editing/posting action. Instagram uses the professional-account container flow when its channel has an Instagram user ID and HTTPS public media base URL configured in Publisher. Override the Graph API version with `DEREEL_INSTAGRAM_GRAPH_VERSION` when needed.
+
+Instagram's public base URL must serve the local app's output route, for example `https://media.example.com/api/projects/<project_id>/output/instagram.mp4`. DeReel does not expose local files to the internet by itself; a deliberately configured reverse proxy, tunnel, or storage host is required.
 
 ## Workflow
 

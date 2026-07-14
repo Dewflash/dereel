@@ -380,9 +380,15 @@ class Handler(BaseHTTPRequestHandler):
             platform = str(payload.get("platform") or "")
             if platform not in {"youtube", "instagram", "tiktok"}:
                 raise ValueError("Unsupported publishing platform")
+            config = {}
+            if platform == "instagram":
+                config = {
+                    "instagram_user_id": str(payload.get("instagram_user_id") or "").strip(),
+                    "public_media_base_url": str(payload.get("public_media_base_url") or "").strip().rstrip("/"),
+                }
             account_id = new_id("account")
             now = now_iso()
-            self.app.db.insert("publishing_accounts", {"id": account_id, "platform": platform, "label": str(payload.get("label") or platform.title()), "status": "not_connected", "config_json": json_dumps({}), "created_at": now, "updated_at": now})
+            self.app.db.insert("publishing_accounts", {"id": account_id, "platform": platform, "label": str(payload.get("label") or platform.title()), "status": "not_connected", "config_json": json_dumps(config), "created_at": now, "updated_at": now})
             self.send_json({"account": self.app.db.get("publishing_accounts", "id", account_id)}, HTTPStatus.CREATED)
             return
         match = re.fullmatch(r"/api/assets/([^/]+)/analyze", path)

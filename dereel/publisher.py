@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -40,7 +42,11 @@ def account_view(row: dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError:
         config = {}
     token_env = config.get("token_env") or PLATFORM_ENV.get(item["platform"], "")
-    item["config"] = {"token_env": token_env}
+    item["config"] = {
+        "token_env": token_env,
+        "instagram_user_id": config.get("instagram_user_id", ""),
+        "public_media_base_url": config.get("public_media_base_url", ""),
+    }
     item["status"] = "connected" if token_env and os.getenv(token_env) else "not_connected"
     return item
 
@@ -106,6 +112,7 @@ def create_publish_jobs(
             selected_account_id = account["id"] if account else None
         payload = {
             "platform": platform,
+            "project_id": project["id"],
             "title": project.get("title") or project.get("name"),
             "caption": project.get("caption", ""),
             "media_path": str(export),
@@ -252,6 +259,100 @@ def publish_tiktok_draft(payload: dict[str, Any], access_token: str) -> str:
     return f"draft:{publish_id}"
 
 
+def _graph_url(version: str, path: str) -> str:
+    return f"https://graph.facebook.com/{version}/{path.lstrip('/')}"
+
+
+def _read_json_response(response: Any) -> dict[str, Any]:
+    try:
+        result = json.loads(response.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError("Publisher returned invalid JSON") from error
+    if not isinstance(result, dict):
+        raise RuntimeError("Publisher returned an invalid response")
+    if result.get("error"):
+        detail = result["error"]
+        if isinstance(detail, dict):
+            raise RuntimeError(f"Instagram returned {detail.get('code')}: {detail.get('message', '')}")
+        raise RuntimeError(f"Instagram returned an error: {detail}")
+    return result
+
+
+def publish_instagram_reel(payload: dict[str, Any], account: dict[str, Any], access_token: str) -> str:
+    config = json.loads(account.get("config_json", "{}"))
+    user_id = str(config.get("instagram_user_id") or os.getenv("DEREEL_INSTAGRAM_USER_ID") or "").strip()
+    public_base = str(config.get("public_media_base_url") or os.getenv("DEREEL_INSTAGRAM_PUBLIC_MEDIA_BASE_URL") or "").strip().rstrip("/")
+    project_id = str(payload.get("project_id") or "").strip()
+    platform = str(payload.get("platform") or "instagram").strip()
+    if not user_id:
+        raise ValueError("Instagram user ID is required for Reels publishing")
+    if not public_base.startswith("https://"):
+        raise ValueError("Instagram requires an HTTPS public media base URL")
+    if not project_id:
+        raise ValueError("Instagram publish job is missing its project ID")
+    public_media_url = str(payload.get("public_media_url") or f"{public_base}/api/projects/{urllib.parse.quote(project_id)}/output/{platform}.mp4")
+    if not public_media_url.startswith("https://"):
+        raise ValueError("Instagram media URL must use HTTPS")
+    version = os.getenv("DEREEL_INSTAGRAM_GRAPH_VERSION", "v22.0")
+    user_path = urllib.parse.quote(user_id, safe="")
+    common = {"access_token": access_token}
+    container_fields = {
+        **common,
+        "media_type": "REELS",
+        "video_url": public_media_url,
+        "caption": str(payload.get("caption") or "")[:2200],
+        "share_to_feed": "true",
+    }
+    container_request = urllib.request.Request(
+        _graph_url(version, f"{user_path}/media"),
+        data=urllib.parse.urlencode(container_fields).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(container_request, timeout=60) as response:
+            container = _read_json_response(response)
+    except urllib.error.HTTPError as error:
+        raise _http_error(error) from error
+    container_id = container.get("id")
+    if not container_id:
+        raise RuntimeError("Instagram did not return a media container ID")
+
+    status_url = _graph_url(version, str(container_id)) + "?" + urllib.parse.urlencode({"fields": "status_code,status", **common})
+    deadline = time.monotonic() + 150
+    while True:
+        status_request = urllib.request.Request(status_url, headers={"Accept": "application/json"}, method="GET")
+        try:
+            with urllib.request.urlopen(status_request, timeout=60) as response:
+                status = _read_json_response(response)
+        except urllib.error.HTTPError as error:
+            raise _http_error(error) from error
+        status_code = str(status.get("status_code") or status.get("status") or "").upper()
+        if status_code in {"FINISHED", "READY"}:
+            break
+        if status_code in {"ERROR", "EXPIRED"}:
+            raise RuntimeError(f"Instagram media container is {status_code.lower()}")
+        if time.monotonic() >= deadline:
+            raise RuntimeError("Instagram media container did not finish processing in time")
+        time.sleep(5)
+
+    publish_request = urllib.request.Request(
+        _graph_url(version, f"{user_path}/media_publish"),
+        data=urllib.parse.urlencode({"creation_id": container_id, **common}).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(publish_request, timeout=60) as response:
+            published = _read_json_response(response)
+    except urllib.error.HTTPError as error:
+        raise _http_error(error) from error
+    media_id = published.get("id")
+    if not media_id:
+        raise RuntimeError("Instagram did not return a published media ID")
+    return str(media_id)
+
+
 def publish_job(db: Database, job: dict[str, Any]) -> str:
     payload = json.loads(job.get("payload_json", "{}"))
     account = db.get("publishing_accounts", "id", job.get("account_id", "")) if job.get("account_id") else None
@@ -269,7 +370,7 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
     if job["platform"] == "youtube":
         return publish_youtube(payload, token)
     if job["platform"] == "instagram":
-        raise ValueError("Instagram requires a publicly reachable video URL for its media container")
+        return publish_instagram_reel(payload, account, token)
     if job["platform"] == "tiktok":
         return publish_tiktok_draft(payload, token)
     raise ValueError("Unsupported publisher")

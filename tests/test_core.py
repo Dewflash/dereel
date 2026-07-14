@@ -6,12 +6,13 @@ import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
-from dereel.publisher import account_view, platform_capabilities, publish_tiktok_draft
+from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_tiktok_draft
 
 
 class CoreModelTests(unittest.TestCase):
@@ -89,6 +90,45 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(requests[0][0].full_url, "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/")
             self.assertEqual(requests[1][0].get_header("Content-range"), "bytes 0-9/10")
             self.assertEqual(requests[1][0].data, b"0123456789")
+
+    def test_instagram_reel_uses_container_poll_and_publish_flow(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: bytes) -> None:
+                self._body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return self._body
+
+        responses = [
+            FakeResponse(b'{"id":"container_1"}'),
+            FakeResponse(b'{"status_code":"FINISHED"}'),
+            FakeResponse(b'{"id":"media_1"}'),
+        ]
+        requests = []
+
+        def fake_urlopen(request, timeout):
+            requests.append((request, timeout))
+            return responses.pop(0)
+
+        account = {"config_json": '{"instagram_user_id":"ig_123","public_media_base_url":"https://media.example"}'}
+        payload = {"project_id": "project_1", "platform": "instagram", "caption": "A caption"}
+        with patch("dereel.publisher.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("dereel.publisher.time.monotonic", return_value=0):
+                result = publish_instagram_reel(payload, account, "token")
+
+        self.assertEqual(result, "media_1")
+        self.assertEqual(len(requests), 3)
+        container_form = parse_qs(requests[0][0].data.decode())
+        self.assertEqual(container_form["media_type"], ["REELS"])
+        self.assertEqual(container_form["video_url"], ["https://media.example/api/projects/project_1/output/instagram.mp4"])
+        self.assertEqual(parse_qs(requests[1][0].full_url.split("?", 1)[1])["fields"], ["status_code,status"])
+        self.assertIn("creation_id=container_1", requests[2][0].data.decode())
 
     def test_project_clip_trim_and_enable_state_are_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

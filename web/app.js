@@ -188,6 +188,12 @@ async function submitAccount(form) {
   try { const data = Object.fromEntries(new FormData(form)); await api("/api/publishing/accounts", { method: "POST", body: JSON.stringify(data) }); toast("Channel added"); form.reset(); await refresh(); } catch (error) { toast(error.message, true); }
 }
 
+function updateAccountFields() {
+  const platform = $("#account-platform")?.value;
+  const config = $("#instagram-config");
+  if (config) config.hidden = platform !== "instagram";
+}
+
 async function submitProviderSearch(form) {
   const button = $("button[type=submit]", form); button.disabled = true;
   try { const data = Object.fromEntries(new FormData(form)); const payload = await api(`/api/scout/search?provider=${encodeURIComponent(data.provider)}&q=${encodeURIComponent(data.query)}`); renderProviderResults(payload.results || []); toast(`${payload.results?.length || 0} source${payload.results?.length === 1 ? "" : "s"} found`); } catch (error) { renderProviderResults([]); toast(error.message, true); } finally { button.disabled = false; }
@@ -199,11 +205,13 @@ $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDef
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
 $("#account-form").addEventListener("submit", (event) => { event.preventDefault(); submitAccount(event.currentTarget); });
+$("#account-platform").addEventListener("change", updateAccountFields);
 $("#provider-search-form").addEventListener("submit", (event) => { event.preventDefault(); submitProviderSearch(event.currentTarget); });
 $("#video-file").addEventListener("change", (event) => { $("#file-label").textContent = event.target.files[0]?.name || "Choose a video"; });
 $("#asset-filters").addEventListener("click", async (event) => { const button = event.target.closest("button"); if (!button) return; state.assetFilter = button.dataset.filter; $$(".filter-tab").forEach((item) => item.classList.toggle("active", item === button)); try { state.visibleAssets = (await api(`/api/assets?view=${state.assetFilter}`)).assets || []; renderAssets(); } catch (error) { toast(error.message, true); } });
 
 const initialView = location.hash.replace("#", "") || "overview";
+updateAccountFields();
 showView(["overview", "scout", "forge", "outputs", "publisher"].includes(initialView) ? initialView : "overview");
 refresh().catch((error) => { toast(error.message, true); $("#health-label").textContent = "offline"; });
 setInterval(() => refresh().catch(() => {}), 2500);
