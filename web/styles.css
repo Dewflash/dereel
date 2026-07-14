@@ -133,6 +133,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .asset-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0 10px; color: var(--muted); font-size: 10px; }
 .asset-tags { display: flex; flex-wrap: wrap; gap: 4px; min-height: 18px; }
 .tag { border-radius: 3px; background: #222c28; color: var(--mint); padding: 3px 5px; font-size: 9px; }
+.risk-flag { border-radius: 3px; background: #352720; color: var(--accent); padding: 3px 5px; font-size: 9px; }
 .asset-actions { display: flex; justify-content: space-between; gap: 8px; margin-top: 12px; }
 .mini-button { border: 1px solid var(--line-bright); border-radius: 4px; background: transparent; color: var(--muted); padding: 6px 8px; font-size: 10px; }
 .mini-button:hover { border-color: var(--accent); color: var(--accent); }

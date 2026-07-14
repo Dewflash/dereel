@@ -13,11 +13,27 @@ from .media import add_text_overlay, concat_segments, mix_audio_bed, normalize_s
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
 
 
+def review_flags(row: dict[str, Any]) -> list[str]:
+    flags: list[str] = []
+    if row.get("kind") == "reference":
+        flags.append("reference-only")
+    if row.get("kind") == "media" and not row.get("local_path"):
+        flags.append("missing-local-file")
+    if row.get("rights_status") == "pending_review":
+        flags.append("provider-license-review" if row.get("platform") in {"pexels", "pixabay"} else "rights-attestation")
+    if row.get("rights_status") == "blocked":
+        flags.append("blocked")
+    if float(row.get("duration") or 0) > 180:
+        flags.append("over-180-seconds")
+    return flags
+
+
 def asset_view(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["tags"] = json_loads(result.pop("tags_json", "[]"), [])
     result["analysis"] = json_loads(result.pop("analysis_json", "{}"), {})
     result["has_audio"] = bool(result.get("has_audio"))
+    result["review_flags"] = review_flags(result)
     return result
 
 
@@ -93,6 +109,12 @@ def create_asset(
     asset_id = new_id("asset")
     now = now_iso()
     details = metadata or {}
+    fingerprint = str(details.get("fingerprint") or "")
+    if fingerprint and kind == "media":
+        with db.connection() as connection:
+            duplicate = connection.execute("SELECT id, title FROM assets WHERE kind = 'media' AND fingerprint = ? LIMIT 1", (fingerprint,)).fetchone()
+        if duplicate:
+            raise ValueError(f"Media matches existing asset '{duplicate['title']}' ({duplicate['id']})")
     db.insert(
         "assets",
         {
@@ -108,7 +130,7 @@ def create_asset(
             "height": details.get("height"),
             "has_audio": int(bool(details.get("has_audio"))),
             "file_size": details.get("file_size"),
-            "fingerprint": details.get("fingerprint", ""),
+            "fingerprint": fingerprint,
             "tags_json": json_dumps(sorted({tag.strip().lower() for tag in (tags or []) if tag.strip()})),
             "rights_status": rights_status,
             "status": "candidate" if kind == "reference" else "ready",
@@ -129,6 +151,10 @@ def analyze_asset(db: Database, asset_id: str) -> dict[str, Any]:
     path = Path(asset["local_path"])
     metadata = validate_audio(path) if str(asset.get("mime_type") or "").startswith("audio/") else validate_video(path)
     metadata["fingerprint"] = sha256_file(path)
+    with db.connection() as connection:
+        duplicate = connection.execute("SELECT id, title FROM assets WHERE kind = 'media' AND fingerprint = ? AND id != ? LIMIT 1", (metadata["fingerprint"], asset_id)).fetchone()
+    if duplicate:
+        raise ValueError(f"Media matches existing asset '{duplicate['title']}' ({duplicate['id']})")
     db.update(
         "assets",
         "id",

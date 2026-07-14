@@ -30,6 +30,21 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(asset["rights_status"], "private_reference")
             self.assertEqual(asset["tags"], ["cats", "funny"])
 
+    def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            create_asset(db, kind="media", title="First clip", local_path="/tmp/first.mp4", metadata={"fingerprint": "same"}, rights_status="pending_review")
+            with self.assertRaisesRegex(ValueError, "matches existing asset"):
+                create_asset(db, kind="media", title="Repeated clip", local_path="/tmp/second.mp4", metadata={"fingerprint": "same"}, rights_status="pending_review")
+
+    def test_review_flags_keep_provider_and_local_attestations_distinct(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            provider = create_asset(db, kind="media", title="Stock clip", platform="pexels", local_path="/tmp/stock.mp4", rights_status="pending_review")
+            local = create_asset(db, kind="media", title="Owned clip", platform="local", local_path="/tmp/owned.mp4", rights_status="pending_review", metadata={"fingerprint": "owned"})
+            self.assertEqual(provider["review_flags"], ["provider-license-review"])
+            self.assertEqual(local["review_flags"], ["rights-attestation"])
+
     def test_project_defaults_to_vertical_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")

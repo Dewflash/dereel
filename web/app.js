@@ -98,8 +98,10 @@ function assetCard(asset) {
   const tags = (asset.tags || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
   const canApprove = asset.kind === "media" && ["pending_review", "private_reference"].includes(asset.rights_status);
   const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status);
-  const action = canApprove ? `<button class="mini-button" data-approve-asset="${asset.id}">Clear for use</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
-  return `<article class="asset-card"><div class="asset-preview">${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}</div><div class="asset-actions">${action}<button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+  const providerImport = ["pexels", "pixabay"].includes(String(asset.platform || "").toLowerCase());
+  const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
+  const flags = (asset.review_flags || []).map((flag) => `<span class="risk-flag">${escapeHtml(flag.replaceAll("-", " "))}</span>`).join("");
+  return `<article class="asset-card"><div class="asset-preview">${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}<button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
 }
 
 function renderAudioSelect() {
@@ -183,14 +185,15 @@ async function submitPublish(form) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, project, planProject, renderProject, approveAsset, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled } = target.dataset;
+  const { view, viewTarget, action, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }
     if (project) { showView("forge"); const selected = state.projects.find((item) => item.id === project); if (selected) renderInspector(selected); return; }
-    if (approveAsset) { await api(`/api/assets/${approveAsset}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Asset cleared for production"); await refresh(); return; }
+    if (approveLicensed) { await api(`/api/assets/${approveLicensed}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "licensed_distribution" }) }); toast("Provider license approved"); await refresh(); return; }
+    if (approveOwned) { await api(`/api/assets/${approveOwned}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Ownership attested"); await refresh(); return; }
     if (rejectAsset) { await api(`/api/assets/${rejectAsset}`, { method: "PATCH", body: JSON.stringify({ status: "rejected", rights_status: "blocked" }) }); toast("Asset rejected"); await refresh(); return; }
     if (addAsset) { showView("forge"); const selected = state.selectedProject || (state.projects.length === 1 ? state.projects[0] : null); if (!selected) { toast("Open a project before adding a clip", true); return; } await api(`/api/projects/${selected.id}/assets`, { method: "POST", body: JSON.stringify({ asset_id: addAsset }) }); toast("Clip added to the selected project"); await refresh(); return; }
     if (saveClip || toggleClip) { const card = target.closest(".timeline-clip"); const clipProject = projectId || card?.dataset.projectId; const clipId = saveClip || toggleClip; const body = toggleClip ? { enabled: Number(enabled) } : { in_point: Number($(".clip-in", card).value), out_point: Number($(".clip-out", card).value) }; await api(`/api/projects/${clipProject}/assets/${clipId}`, { method: "POST", body: JSON.stringify(body) }); toast(toggleClip ? "Clip state updated" : "Trim points saved"); await refresh(); return; }
