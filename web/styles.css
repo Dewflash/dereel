@@ -171,6 +171,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .output-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 19px; }
 
 .publisher-grid { margin-bottom: 18px; }
+.publish-controls { margin-bottom: 18px; }
+.publish-form-grid { display: grid; grid-template-columns: minmax(190px, 1.25fr) minmax(170px, 1fr) minmax(250px, 1.4fr) auto; align-items: end; gap: 11px; }
+.publish-form-grid label { margin-bottom: 0; }
+.platform-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 42px; border: 1px solid var(--line-bright); border-radius: 4px; margin: 0; padding: 6px 9px; }
+.platform-picker legend { padding: 0 4px; color: var(--dim); font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; }
+.platform-choice { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted); font-size: 10px; font-weight: 700; }
+.platform-choice input { width: auto; accent-color: var(--accent); }
+.publish-form-grid > .button { min-height: 42px; margin-bottom: 0; }
 .account-row { min-height: 68px; }
 .account-row .row-icon { color: var(--cyan); }
 .publish-row { align-items: flex-start; }
@@ -207,6 +215,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   .provider-search { grid-template-columns: 1fr; }
   .provider-results { grid-template-columns: 1fr; }
   .audio-form-row { grid-template-columns: 1fr; }
+  .publish-form-grid { grid-template-columns: 1fr; }
   .output-card { grid-template-columns: 110px minmax(0, 1fr); gap: 13px; padding: 11px; }
   .output-info h3 { font-size: 15px; }
   .output-info p { font-size: 10px; }

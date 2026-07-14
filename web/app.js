@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], providerResults: [], assetFilter: "all", selectedProject: null };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], providerResults: [], assetFilter: "all", selectedProject: null, publishDraft: { projectId: "" } };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -134,6 +134,15 @@ function renderOutputs() {
 }
 
 function renderPublisher() {
+  const projectSelect = $("#publish-project");
+  if (projectSelect) {
+    const readyProjects = state.projects.filter((project) => project.status === "ready" && project.output_dir);
+    const currentProject = state.publishDraft.projectId || projectSelect.value;
+    projectSelect.innerHTML = readyProjects.length ? readyProjects.map((project) => `<option value="${escapeHtml(project.id)}">${escapeHtml(project.title || project.name)}</option>`).join("") : `<option value="">No rendered projects</option>`;
+    const selectedProject = readyProjects.find((project) => project.id === currentProject) || readyProjects[0];
+    state.publishDraft.projectId = selectedProject?.id || "";
+    projectSelect.value = state.publishDraft.projectId;
+  }
   $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · OAuth connection pending</small></div>${statusPill(account.status)}</div>`).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
   $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => `<div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${statusPill(job.status)}${job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : ""}</div>`).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
@@ -153,6 +162,25 @@ async function submitAudioUpload(form) {
   try { const result = await api("/api/assets/audio-upload", { method: "POST", body: new FormData(form) }); toast(`${result.asset.title} added to audio library`); form.reset(); await refresh(); } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
 }
 
+async function submitPublish(form) {
+  const data = new FormData(form);
+  const projectId = String(data.get("project_id") || "");
+  const platforms = data.getAll("platform").map(String);
+  if (!projectId) throw new Error("Render a project before preparing a release");
+  if (!platforms.length) throw new Error("Choose at least one destination");
+  let scheduledFor = "";
+  const scheduledInput = String(data.get("scheduled_for") || "");
+  if (scheduledInput) {
+    const scheduledDate = new Date(scheduledInput);
+    if (Number.isNaN(scheduledDate.getTime())) throw new Error("Schedule time is invalid");
+    scheduledFor = scheduledDate.toISOString();
+  }
+  const result = await api(`/api/projects/${projectId}/publish`, { method: "POST", body: JSON.stringify({ platforms, scheduled_for: scheduledFor }) });
+  state.publishDraft.projectId = projectId;
+  toast(`${result.jobs.length} package${result.jobs.length === 1 ? "" : "s"} prepared`);
+  await refresh();
+}
+
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
   const { view, viewTarget, action, project, planProject, renderProject, approveAsset, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled } = target.dataset;
@@ -170,7 +198,7 @@ async function handleClick(event) {
     if (target.dataset.copyPath) { await navigator.clipboard?.writeText(target.dataset.copyPath); toast("Package path copied"); return; }
     if (planProject) { await api(`/api/projects/${planProject}/plan`, { method: "POST", body: "{}" }); toast("Edit plan updated"); await refresh(); return; }
     if (renderProject) { const result = await api(`/api/projects/${renderProject}/render`, { method: "POST", body: "{}" }); toast(`Render queued: ${result.job.id}`); await refresh(); return; }
-    if (publishProject) { showView("publisher"); const projectItem = state.projects.find((item) => item.id === publishProject); if (projectItem) { const platforms = ["youtube", "tiktok", "instagram"]; await api(`/api/projects/${publishProject}/publish`, { method: "POST", body: JSON.stringify({ platforms }) }); toast("Publish packages prepared"); await refresh(); } return; }
+    if (publishProject) { state.publishDraft.projectId = publishProject; showView("publisher"); renderPublisher(); toast("Release selected"); return; }
     if (runPublish) { await api(`/api/publishing/jobs/${runPublish}/publish`, { method: "POST", body: "{}" }); toast("Published successfully"); await refresh(); return; }
     if (markPublished) { await api(`/api/publishing/jobs/${markPublished}/mark-published`, { method: "POST", body: JSON.stringify({ remote_id: "manual" }) }); toast("Marked as posted"); await refresh(); return; }
   } catch (error) { toast(error.message, true); }
@@ -204,6 +232,7 @@ $("#upload-form").addEventListener("submit", (event) => { event.preventDefault()
 $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
+$("#publish-form").addEventListener("submit", (event) => { event.preventDefault(); submitPublish(event.currentTarget).catch((error) => toast(error.message, true)); });
 $("#account-form").addEventListener("submit", (event) => { event.preventDefault(); submitAccount(event.currentTarget); });
 $("#account-platform").addEventListener("change", updateAccountFields);
 $("#provider-search-form").addEventListener("submit", (event) => { event.preventDefault(); submitProviderSearch(event.currentTarget); });
