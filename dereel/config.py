@@ -14,6 +14,7 @@ class Settings:
     data_dir: Path = ROOT / "data"
     database_path: Path = ROOT / "data" / "dereel.sqlite3"
     originals_dir: Path = ROOT / "data" / "library" / "originals"
+    audio_dir: Path = ROOT / "data" / "library" / "audio"
     output_dir: Path = ROOT / "outputs"
     web_dir: Path = ROOT / "web"
     host: str = os.getenv("DEREEL_HOST", "127.0.0.1")
@@ -22,6 +23,7 @@ class Settings:
     def ensure_directories(self) -> None:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.originals_dir.mkdir(parents=True, exist_ok=True)
+        self.audio_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
 

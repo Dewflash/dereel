@@ -3,7 +3,8 @@
 DeReel is a local-first short-form video studio. It has two connected surfaces:
 
 - **Scout** stores discovery references and imports media that is owned, licensed, public-domain, or otherwise cleared for production.
-- **Forge** plans a themed edit, normalizes clips with FFmpeg, adds title treatment, creates platform-shaped exports, and writes a manifest to `outputs/`.
+- **Scout** can search Pexels and Pixabay when `PEXELS_API_KEY` or `PIXABAY_API_KEY` is configured. Provider imports are constrained to approved media hosts and enter `pending_review`.
+- **Forge** plans a themed edit, normalizes clips with FFmpeg, mixes an optional cleared music bed, adds title treatment, creates platform-shaped exports, and writes a manifest to `outputs/`.
 - **Publisher** creates an outbox package for YouTube Shorts, Instagram Reels, and TikTok. Account OAuth integrations are intentionally represented as explicit adapters rather than browser login automation.
 
 ## Run locally
@@ -16,6 +17,13 @@ python3 -m dereel
 Open <http://127.0.0.1:8765>. FFmpeg and ffprobe must be available on `PATH`.
 
 The app uses only Python's standard library for its first local runtime. SQLite lives in `data/dereel.sqlite3`, imported originals live in `data/library/originals/`, and rendered packages live in `outputs/`.
+
+Optional provider search uses the official provider APIs. Set a key in the shell before starting DeReel:
+
+```bash
+export PEXELS_API_KEY="..."
+export PIXABAY_API_KEY="..."
+```
 
 ## Workflow
 

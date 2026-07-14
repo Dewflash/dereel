@@ -1,4 +1,4 @@
-const state = { assets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], assetFilter: "all", selectedProject: null };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], providerResults: [], assetFilter: "all", selectedProject: null };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -46,16 +46,18 @@ function showView(view) {
 }
 
 async function refresh() {
-  const [dashboard, assets, projects, jobs, accounts, publishing] = await Promise.all([
-    api("/api/dashboard"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"),
+  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing] = await Promise.all([
+    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"),
   ]);
-  state.assets = assets.assets || [];
+  state.assets = allAssets.assets || [];
+  state.visibleAssets = filteredAssets.assets || [];
   state.projects = projects.projects || [];
   state.jobs = jobs.jobs || [];
   state.accounts = accounts.accounts || [];
   state.publishingJobs = publishing.jobs || [];
   renderDashboard(dashboard);
   renderAssets();
+  renderAudioSelect();
   renderProjects();
   renderOutputs();
   renderPublisher();
@@ -81,18 +83,32 @@ function projectRow(project) {
 function empty(title, detail) { return `<div class="empty-state"><span>·</span><strong>${escapeHtml(title)}</strong><p>${escapeHtml(detail)}</p></div>`; }
 
 function renderAssets() {
-  const assets = state.assets;
+  const assets = state.visibleAssets;
   $("#asset-count").textContent = `${assets.length} asset${assets.length === 1 ? "" : "s"}`;
   $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", state.assetFilter === "references" ? "Save a source URL to Scout." : "Import a cleared video to populate the board.");
 }
 
+function renderProviderResults(results = []) {
+  state.providerResults = results;
+  $("#provider-results").innerHTML = results.length ? results.map((item) => `<article class="provider-result"><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong><small>${escapeHtml(item.provider)} · ${formatDuration(item.duration)} · ${item.width || "?"}x${item.height || "?"}</small><div class="asset-actions"><button class="mini-button" data-provider-save="${escapeHtml(item.provider_id)}">Save reference</button><button class="mini-button" data-provider-import="${escapeHtml(item.provider_id)}">Import for review</button></div></article>`).join("") : "";
+}
+
 function assetCard(asset) {
-  const preview = asset.local_path ? `<video src="/api/assets/${asset.id}/stream" muted preload="metadata"></video>` : "↗";
+  const preview = asset.local_path ? (String(asset.mime_type || "").startsWith("audio/") ? "♫" : `<video src="/api/assets/${asset.id}/stream" muted preload="metadata"></video>`) : "↗";
   const tags = (asset.tags || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
   const canApprove = asset.kind === "media" && ["pending_review", "private_reference"].includes(asset.rights_status);
   const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status);
   const action = canApprove ? `<button class="mini-button" data-approve-asset="${asset.id}">Clear for use</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
   return `<article class="asset-card"><div class="asset-preview">${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}</div><div class="asset-actions">${action}<button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+}
+
+function renderAudioSelect() {
+  const select = $("#music-asset-select");
+  if (!select) return;
+  const current = select.value;
+  const audioAssets = state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
+  select.innerHTML = `<option value="">No music bed</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
+  if (audioAssets.some((asset) => asset.id === current)) select.value = current;
 }
 
 function renderProjects() {
@@ -131,9 +147,14 @@ async function submitUpload(form) {
   } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
 }
 
+async function submitAudioUpload(form) {
+  const button = $("button[type=submit]", form); button.disabled = true;
+  try { const result = await api("/api/assets/audio-upload", { method: "POST", body: new FormData(form) }); toast(`${result.asset.title} added to audio library`); form.reset(); await refresh(); } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+}
+
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, project, planProject, renderProject, approveAsset, rejectAsset, addAsset, publishProject, markPublished } = target.dataset;
+  const { view, viewTarget, action, project, planProject, renderProject, approveAsset, rejectAsset, addAsset, publishProject, markPublished, providerSave, providerImport } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -143,6 +164,7 @@ async function handleClick(event) {
     if (approveAsset) { await api(`/api/assets/${approveAsset}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Asset cleared for production"); await refresh(); return; }
     if (rejectAsset) { await api(`/api/assets/${rejectAsset}`, { method: "PATCH", body: JSON.stringify({ status: "rejected", rights_status: "blocked" }) }); toast("Asset rejected"); await refresh(); return; }
     if (addAsset) { showView("forge"); const selected = state.selectedProject || (state.projects.length === 1 ? state.projects[0] : null); if (!selected) { toast("Open a project before adding a clip", true); return; } await api(`/api/projects/${selected.id}/assets`, { method: "POST", body: JSON.stringify({ asset_id: addAsset }) }); toast("Clip added to the selected project"); await refresh(); return; }
+    if (providerSave || providerImport) { const item = state.providerResults.find((result) => result.provider_id === (providerSave || providerImport)); if (!item) { toast("Provider result expired", true); return; } if (providerSave) { await api("/api/assets/reference", { method: "POST", body: JSON.stringify({ title: item.title, source_url: item.source_url, platform: item.provider, tags: [item.provider] }) }); toast("Reference saved to Scout"); } else { await api("/api/scout/import", { method: "POST", body: JSON.stringify({ provider: item.provider, download_url: item.download_url, source_url: item.source_url, title: item.title, tags: [item.provider] }) }); toast("Provider asset imported for review"); } await refresh(); return; }
     if (target.dataset.copyPath) { await navigator.clipboard?.writeText(target.dataset.copyPath); toast("Package path copied"); return; }
     if (planProject) { await api(`/api/projects/${planProject}/plan`, { method: "POST", body: "{}" }); toast("Edit plan updated"); await refresh(); return; }
     if (renderProject) { const result = await api(`/api/projects/${renderProject}/render`, { method: "POST", body: "{}" }); toast(`Render queued: ${result.job.id}`); await refresh(); return; }
@@ -156,20 +178,27 @@ async function submitReference(form) {
 }
 
 async function submitProject(form) {
-  try { const data = Object.fromEntries(new FormData(form)); const result = await api("/api/projects", { method: "POST", body: JSON.stringify({ ...data, duration_target: Number(data.duration_target) }) }); toast("Project created"); form.reset(); $("input[name=duration_target]", form).value = 35; await refresh(); renderInspector(result.project); } catch (error) { toast(error.message, true); }
+  try { const data = Object.fromEntries(new FormData(form)); const result = await api("/api/projects", { method: "POST", body: JSON.stringify({ ...data, music_asset_id: $("#music-asset-select")?.value || "", duration_target: Number(data.duration_target) }) }); toast("Project created"); form.reset(); $("input[name=duration_target]", form).value = 35; $("#music-asset-select").value = ""; await refresh(); renderInspector(result.project); } catch (error) { toast(error.message, true); }
 }
 
 async function submitAccount(form) {
   try { const data = Object.fromEntries(new FormData(form)); await api("/api/publishing/accounts", { method: "POST", body: JSON.stringify(data) }); toast("Channel added"); form.reset(); await refresh(); } catch (error) { toast(error.message, true); }
 }
 
+async function submitProviderSearch(form) {
+  const button = $("button[type=submit]", form); button.disabled = true;
+  try { const data = Object.fromEntries(new FormData(form)); const payload = await api(`/api/scout/search?provider=${encodeURIComponent(data.provider)}&q=${encodeURIComponent(data.query)}`); renderProviderResults(payload.results || []); toast(`${payload.results?.length || 0} source${payload.results?.length === 1 ? "" : "s"} found`); } catch (error) { renderProviderResults([]); toast(error.message, true); } finally { button.disabled = false; }
+}
+
 document.addEventListener("click", handleClick);
 $("#upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitUpload(event.currentTarget); });
+$("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
 $("#account-form").addEventListener("submit", (event) => { event.preventDefault(); submitAccount(event.currentTarget); });
+$("#provider-search-form").addEventListener("submit", (event) => { event.preventDefault(); submitProviderSearch(event.currentTarget); });
 $("#video-file").addEventListener("change", (event) => { $("#file-label").textContent = event.target.files[0]?.name || "Choose a video"; });
-$("#asset-filters").addEventListener("click", async (event) => { const button = event.target.closest("button"); if (!button) return; state.assetFilter = button.dataset.filter; $$(".filter-tab").forEach((item) => item.classList.toggle("active", item === button)); try { state.assets = (await api(`/api/assets?view=${state.assetFilter}`)).assets || []; renderAssets(); } catch (error) { toast(error.message, true); } });
+$("#asset-filters").addEventListener("click", async (event) => { const button = event.target.closest("button"); if (!button) return; state.assetFilter = button.dataset.filter; $$(".filter-tab").forEach((item) => item.classList.toggle("active", item === button)); try { state.visibleAssets = (await api(`/api/assets?view=${state.assetFilter}`)).assets || []; renderAssets(); } catch (error) { toast(error.message, true); } });
 
 const initialView = location.hash.replace("#", "") || "overview";
 showView(["overview", "scout", "forge", "outputs", "publisher"].includes(initialView) ? initialView : "overview");

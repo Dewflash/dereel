@@ -7,8 +7,9 @@ import subprocess
 from pathlib import Path
 
 from dereel.db import Database
-from dereel.media import sha256_file, validate_video
+from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, render_project, score_asset
+from dereel.scout import _host_allowed
 
 
 class CoreModelTests(unittest.TestCase):
@@ -39,6 +40,12 @@ class CoreModelTests(unittest.TestCase):
         weak = {"title": "landscape", "tags_json": "[]", "duration": 45, "width": 1920, "height": 1080, "has_audio": 0}
         self.assertGreater(score_asset(matching, {"cat", "funny"}), score_asset(weak, {"cat", "funny"}))
 
+    def test_provider_import_only_allows_known_https_hosts(self) -> None:
+        self.assertTrue(_host_allowed("pexels", "https://videos.pexels.com/video.mp4"))
+        self.assertTrue(_host_allowed("pixabay", "https://cdn.pixabay.com/video.mp4"))
+        self.assertFalse(_host_allowed("pexels", "https://example.com/video.mp4"))
+        self.assertFalse(_host_allowed("pexels", "http://videos.pexels.com/video.mp4"))
+
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_creates_vertical_outputs_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -65,6 +72,26 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
             self.assertEqual(result["manifest"]["outputs"]["master"], str(output))
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
+    def test_render_mixes_a_cleared_audio_bed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            audio = root / "audio.m4a"
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x31565a:s=320x568:d=1.5", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)], check=True)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=1.5", "-c:a", "aac", str(audio)], check=True)
+            db = Database(root / "test.sqlite3")
+            video_metadata = validate_video(source)
+            audio_metadata = validate_audio(audio)
+            video = create_asset(db, kind="media", title="Sample video", local_path=str(source), rights_status="owned_distribution", metadata=video_metadata)
+            music = create_asset(db, kind="media", title="Sample bed", local_path=str(audio), mime_type="audio/mp4", rights_status="owned_distribution", metadata=audio_metadata)
+            project = create_project(db, {"name": "Audio check", "theme": "sample", "duration_target": 8, "music_asset_id": music["id"]})
+            with db.connection() as connection:
+                connection.execute("INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 1.5, 1, 'test')", (project["id"], video["id"]))
+            result = render_project(db, project["id"], root / "outputs", lambda _progress, _message: None)
+            self.assertEqual(result["manifest"]["audio"]["asset_id"], music["id"])
+            self.assertTrue((Path(result["output_dir"]) / "final.mp4").is_file())
 
 
 if __name__ == "__main__":

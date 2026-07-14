@@ -110,6 +110,19 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .drop-zone strong { color: var(--ink); font-size: 12px; }
 .drop-zone small { color: var(--dim); font-size: 10px; margin-top: 5px; }
 .form-note { color: var(--dim); font-size: 10px; line-height: 1.55; margin: 14px 0 0; }
+.audio-panel { margin-bottom: 18px; }
+.audio-form-row { display: grid; grid-template-columns: 1.2fr 1fr 180px auto; align-items: end; gap: 10px; }
+.audio-file-label { display: flex; align-items: center; justify-content: center; min-height: 41px; border: 1px dashed #5b493d; border-radius: 5px; background: #1d1916; color: var(--muted); cursor: pointer; }
+.audio-file-label:hover { border-color: var(--accent); color: var(--accent); }
+.audio-file-label input { display: none; }
+.audio-selection { max-width: 390px; margin-bottom: 15px; }
+.provider-panel { margin-bottom: 18px; }
+.provider-search { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; gap: 8px; }
+.provider-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 15px; }
+.provider-result { min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: #111715; padding: 12px; }
+.provider-result strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.provider-result small { display: block; min-height: 30px; color: var(--muted); font-size: 10px; line-height: 1.45; margin-top: 7px; }
+.provider-result .asset-actions { margin-top: 12px; }
 .library-panel { margin-top: 18px; }
 .asset-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .asset-card { overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: #111715; }
@@ -186,6 +199,9 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   .split-grid, .scout-grid, .publisher-grid, .forge-layout { grid-template-columns: 1fr; }
   .filter-tabs { justify-content: flex-start; margin-top: 17px; }
   .asset-grid { grid-template-columns: 1fr; }
+  .provider-search { grid-template-columns: 1fr; }
+  .provider-results { grid-template-columns: 1fr; }
+  .audio-form-row { grid-template-columns: 1fr; }
   .output-card { grid-template-columns: 110px minmax(0, 1fr); gap: 13px; padding: 11px; }
   .output-info h3 { font-size: 15px; }
   .output-info p { font-size: 10px; }

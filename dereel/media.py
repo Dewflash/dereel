@@ -11,14 +11,16 @@ from typing import Any
 
 
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
+AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
+MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
 
 
 def safe_extension(filename: str, mime_type: str | None = None) -> str:
     extension = Path(filename).suffix.lower()
-    if extension in VIDEO_EXTENSIONS:
+    if extension in MEDIA_EXTENSIONS:
         return extension
     guessed = mimetypes.guess_extension(mime_type or "") or ".mp4"
-    return guessed if guessed in VIDEO_EXTENSIONS else ".mp4"
+    return guessed if guessed in MEDIA_EXTENSIONS else ".mp4"
 
 
 def sha256_file(path: Path) -> str:
@@ -66,6 +68,17 @@ def validate_video(path: Path) -> dict[str, Any]:
     metadata = probe(path)
     if metadata["duration"] <= 0 or metadata["width"] <= 0 or metadata["height"] <= 0:
         raise ValueError("Media file has no usable video stream")
+    return metadata
+
+
+def validate_audio(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        raise ValueError("Audio file does not exist")
+    if path.stat().st_size <= 0:
+        raise ValueError("Audio file is empty")
+    metadata = probe(path)
+    if metadata["duration"] <= 0 or not metadata["has_audio"]:
+        raise ValueError("Audio file has no usable audio stream")
     return metadata
 
 
@@ -213,3 +226,16 @@ def add_text_overlay(source: Path, destination: Path, title: str, subtitle: str 
     finally:
         title_file.unlink(missing_ok=True)
         subtitle_file.unlink(missing_ok=True)
+
+
+def mix_audio_bed(source: Path, audio: Path, destination: Path, volume: float = 0.16) -> None:
+    level = max(0.0, min(float(volume), 1.0))
+    command = [
+        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+        "-i", str(source), "-stream_loop", "-1", "-i", str(audio),
+        "-filter_complex", f"[1:a]volume={level:.3f}[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[a]",
+        "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(destination),
+    ]
+    result = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "FFmpeg could not mix the audio bed")

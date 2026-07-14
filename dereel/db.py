@@ -117,6 +117,15 @@ class Database:
                     PRIMARY KEY(project_id, asset_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS project_audio (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE RESTRICT,
+                    role TEXT NOT NULL CHECK(role IN ('music', 'sfx', 'voiceover')),
+                    volume REAL NOT NULL DEFAULT 0.16,
+                    start_time REAL NOT NULL DEFAULT 0,
+                    PRIMARY KEY(project_id, asset_id, role)
+                );
+
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,

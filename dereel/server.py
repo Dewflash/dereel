@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Settings, settings
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import safe_extension, sha256_file, validate_video
+from .media import safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
     analyze_asset,
     asset_view,
@@ -28,6 +28,7 @@ from .pipeline import (
     set_job,
 )
 from .publisher import create_publish_jobs, publish_job_view
+from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
@@ -206,6 +207,14 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/assets":
             self.send_json({"assets": list_assets(self.app.db, (query.get("view") or ["all"])[0])})
             return
+        if path == "/api/scout/providers":
+            self.send_json({"providers": configured_providers()})
+            return
+        if path == "/api/scout/search":
+            provider = (query.get("provider") or [""])[0]
+            search_query = (query.get("q") or [""])[0]
+            self.send_json({"provider": provider, "query": search_query, "results": search_provider(provider, search_query)})
+            return
         if path == "/api/projects":
             with self.app.db.connection() as connection:
                 rows = connection.execute("SELECT * FROM projects ORDER BY updated_at DESC").fetchall()
@@ -269,6 +278,10 @@ class Handler(BaseHTTPRequestHandler):
             )
             self.send_json({"asset": asset}, HTTPStatus.CREATED)
             return
+        if path == "/api/scout/import":
+            asset = import_provider_asset(self.app.db, self.app.settings.originals_dir, self.read_json())
+            self.send_json({"asset": asset}, HTTPStatus.CREATED)
+            return
         if path == "/api/assets/upload":
             content_type = self.headers.get("Content-Type", "")
             fields, files = parse_multipart(content_type, self.read_body())
@@ -282,6 +295,37 @@ class Handler(BaseHTTPRequestHandler):
             destination.write_bytes(data)
             try:
                 metadata = validate_video(destination)
+                metadata["fingerprint"] = sha256_file(destination)
+                asset = create_asset(
+                    self.app.db,
+                    kind="media",
+                    title=fields.get("title") or Path(filename).stem,
+                    source_url=fields.get("source_url", ""),
+                    platform=fields.get("platform", "local"),
+                    local_path=str(destination),
+                    mime_type=mime_type,
+                    tags=[tag.strip() for tag in fields.get("tags", "").split(",")],
+                    rights_status=fields.get("rights_status", "pending_review"),
+                    metadata=metadata,
+                )
+            except Exception:
+                destination.unlink(missing_ok=True)
+                raise
+            self.send_json({"asset": asset}, HTTPStatus.CREATED)
+            return
+        if path == "/api/assets/audio-upload":
+            content_type = self.headers.get("Content-Type", "")
+            fields, files = parse_multipart(content_type, self.read_body())
+            if "file" not in files:
+                raise ValueError("An audio file is required")
+            filename, data, mime_type = files["file"]
+            if len(data) > MAX_UPLOAD_BYTES:
+                raise ValueError("Audio exceeds upload limit")
+            asset_id = new_id("asset")
+            destination = self.app.settings.audio_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
+            destination.write_bytes(data)
+            try:
+                metadata = validate_audio(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(
                     self.app.db,

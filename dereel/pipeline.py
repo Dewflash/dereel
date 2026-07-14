@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import add_text_overlay, concat_segments, normalize_segment, sha256_file, validate_video
+from .media import add_text_overlay, concat_segments, mix_audio_bed, normalize_segment, sha256_file, validate_audio, validate_video
 
 
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
@@ -144,6 +144,13 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     caption = str(payload.get("caption") or "")[:500]
     duration_target = max(8, min(float(payload.get("duration_target") or 35), 180))
     style = str(payload.get("style") or "kinetic")[:40]
+    music_asset_id = str(payload.get("music_asset_id") or "")
+    if music_asset_id:
+        music_asset = db.get("assets", "id", music_asset_id)
+        if not music_asset or not music_asset.get("local_path") or not str(music_asset.get("mime_type") or "").startswith("audio/"):
+            raise ValueError("Selected music is not a valid audio asset")
+        if music_asset.get("rights_status") not in PRODUCTION_RIGHTS or music_asset.get("status") not in {"ready", "approved"}:
+            raise ValueError("Selected music is not cleared for production")
     db.insert(
         "projects",
         {
@@ -157,7 +164,7 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
             "title": title,
             "caption": caption,
             "output_dir": "",
-            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": True}),
+            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": True, "music_asset_id": music_asset_id, "music_volume": max(0, min(float(payload.get("music_volume") or 0.16), 1))}),
             "manifest_json": json_dumps({}),
             "created_at": now,
             "updated_at": now,
@@ -291,6 +298,20 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         base = output_dir / "master.mp4"
         concat_segments(segments, base)
         progress(0.78, "Joined the edit")
+        settings = json_loads(project.get("settings_json"), {})
+        music_asset_id = settings.get("music_asset_id")
+        if music_asset_id:
+            audio_asset = db.get("assets", "id", music_asset_id)
+            if not audio_asset or audio_asset.get("rights_status") not in PRODUCTION_RIGHTS or not audio_asset.get("local_path"):
+                raise ValueError("Selected music is not cleared for production")
+            audio_source = Path(audio_asset["local_path"])
+            validate_audio(audio_source)
+            mixed = output_dir / "mixed.mp4"
+            mix_audio_bed(base, audio_source, mixed, float(settings.get("music_volume", 0.16)))
+            base.unlink(missing_ok=True)
+            base = mixed
+            manifest["audio"] = {"asset_id": music_asset_id, "source": str(audio_source), "volume": float(settings.get("music_volume", 0.16))}
+            progress(0.84, "Mixed the audio bed")
         titled = output_dir / "final.mp4"
         overlay_applied = add_text_overlay(base, titled, project["title"] or project["name"], project["caption"])
         base.unlink(missing_ok=True)
@@ -303,7 +324,10 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         manifest["overlay_applied"] = overlay_applied
         manifest_path = output_dir / "render-manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
-        (output_dir / "credits.json").write_text(json.dumps({"assets": [item["asset_id"] for item in enabled]}, indent=2))
+        credit_assets = [item["asset_id"] for item in enabled]
+        if music_asset_id:
+            credit_assets.append(music_asset_id)
+        (output_dir / "credits.json").write_text(json.dumps({"assets": credit_assets}, indent=2))
         db.update("projects", "id", project_id, {"status": "ready", "output_dir": str(output_dir), "manifest_json": json_dumps(manifest), "updated_at": now_iso()})
         progress(1.0, "Render complete")
         return {"output_dir": str(output_dir), "manifest": manifest}
