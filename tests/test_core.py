@@ -12,6 +12,7 @@ from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
+from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_tiktok_draft
 
 
@@ -44,6 +45,51 @@ class CoreModelTests(unittest.TestCase):
             local = create_asset(db, kind="media", title="Owned clip", platform="local", local_path="/tmp/owned.mp4", rights_status="pending_review", metadata={"fingerprint": "owned"})
             self.assertEqual(provider["review_flags"], ["provider-license-review"])
             self.assertEqual(local["review_flags"], ["rights-attestation"])
+
+    @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
+    def test_automation_imports_reviews_renders_and_deduplicates_batches(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watch_dir = root / "watch"
+            watch_dir.mkdir()
+            source = watch_dir / "cat.mp4"
+            subprocess.run(
+                [
+                    "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
+                    "-f", "lavfi", "-i", "color=c=0x31565a:s=320x568:d=1.2",
+                    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
+                ],
+                check=True,
+            )
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Cats", "watch_dir": str(watch_dir), "theme": "cat funny", "default_rights": "pending_review"})
+            first = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual(first["status"], "awaiting_review")
+            finish_automation(db, automation["id"], first)
+            with db.connection() as connection:
+                asset = connection.execute("SELECT id FROM assets WHERE automation_id = ?", (automation["id"],)).fetchone()
+                self.assertIsNotNone(asset)
+                connection.execute("UPDATE assets SET rights_status = 'owned_distribution', status = 'approved' WHERE id = ?", (asset["id"],))
+            second = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual(second["status"], "rendered")
+            self.assertTrue((Path(second["output_dir"]) / "final.mp4").is_file())
+            finish_automation(db, automation["id"], second)
+            third = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual(third["status"], "idle")
+            (Path(second["output_dir"]) / "final.mp4").unlink()
+            fourth = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual(fourth["status"], "rendered")
+            with db.connection() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
+
+    def test_automation_claim_prevents_duplicate_scheduler_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            automation = create_automation(db, {"name": "Scheduled", "watch_dir": directory, "enabled": True, "interval_minutes": 15})
+            self.assertEqual([item["id"] for item in due_automations(db)], [automation["id"]])
+            self.assertTrue(claim_automation(db, automation["id"]))
+            self.assertEqual(due_automations(db), [])
 
     def test_project_defaults_to_vertical_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

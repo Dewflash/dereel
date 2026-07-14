@@ -77,6 +77,7 @@ class Database:
                     has_audio INTEGER NOT NULL DEFAULT 0,
                     file_size INTEGER,
                     fingerprint TEXT,
+                    automation_id TEXT,
                     tags_json TEXT NOT NULL DEFAULT '[]',
                     rights_status TEXT NOT NULL CHECK(rights_status IN ('private_reference', 'owned_distribution', 'licensed_distribution', 'blocked', 'pending_review')),
                     status TEXT NOT NULL CHECK(status IN ('candidate', 'approved', 'rejected', 'ready')),
@@ -116,6 +117,33 @@ class Database:
                     selected_by TEXT NOT NULL DEFAULT 'manual',
                     PRIMARY KEY(project_id, asset_id)
                 );
+
+                CREATE TABLE IF NOT EXISTS automations (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    watch_dir TEXT NOT NULL,
+                    theme TEXT NOT NULL,
+                    duration_target REAL NOT NULL DEFAULT 35,
+                    style TEXT NOT NULL DEFAULT 'kinetic',
+                    title_template TEXT NOT NULL DEFAULT '',
+                    caption_template TEXT NOT NULL DEFAULT '',
+                    tags_json TEXT NOT NULL DEFAULT '[]',
+                    default_rights TEXT NOT NULL CHECK(default_rights IN ('pending_review', 'owned_distribution', 'licensed_distribution')),
+                    music_asset_id TEXT,
+                    platforms_json TEXT NOT NULL DEFAULT '[]',
+                    interval_minutes INTEGER NOT NULL DEFAULT 0,
+                    publish_delay_minutes INTEGER NOT NULL DEFAULT 0,
+                    auto_render INTEGER NOT NULL DEFAULT 1,
+                    enabled INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL CHECK(status IN ('idle', 'queued', 'running', 'failed')) DEFAULT 'idle',
+                    last_run_at TEXT,
+                    last_error TEXT NOT NULL DEFAULT '',
+                    last_project_id TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_automations_enabled ON automations(enabled, interval_minutes, status);
 
                 CREATE TABLE IF NOT EXISTS project_audio (
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -163,9 +191,13 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR IGNORE INTO schema_meta(key, value) VALUES ('schema_version', '1');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '2');
                 """
             )
+            asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
+            if "automation_id" not in asset_columns:
+                connection.execute("ALTER TABLE assets ADD COLUMN automation_id TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_assets_automation ON assets(automation_id)")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

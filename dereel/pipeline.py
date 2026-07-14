@@ -103,6 +103,7 @@ def create_asset(
     tags: list[str] | None = None,
     rights_status: str = "private_reference",
     metadata: dict[str, Any] | None = None,
+    automation_id: str = "",
 ) -> dict[str, Any]:
     if rights_status not in {"private_reference", "owned_distribution", "licensed_distribution", "blocked", "pending_review"}:
         raise ValueError("Unsupported rights status")
@@ -131,6 +132,7 @@ def create_asset(
             "has_audio": int(bool(details.get("has_audio"))),
             "file_size": details.get("file_size"),
             "fingerprint": fingerprint,
+            "automation_id": automation_id,
             "tags_json": json_dumps(sorted({tag.strip().lower() for tag in (tags or []) if tag.strip()})),
             "rights_status": rights_status,
             "status": "candidate" if kind == "reference" else "ready",
@@ -244,16 +246,27 @@ def score_asset(asset: dict[str, Any], theme_tokens: set[str]) -> float:
     return score
 
 
-def plan_project(db: Database, project_id: str) -> dict[str, Any]:
+def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None = None) -> dict[str, Any]:
     project = db.get("projects", "id", project_id)
     if not project:
         raise KeyError("Project not found")
     db.update("projects", "id", project_id, {"status": "planning", "updated_at": now_iso()})
     theme_tokens = {token.lower() for token in project["theme"].replace(",", " ").split() if len(token) > 2}
-    with db.connection() as connection:
-        rows = connection.execute(
-            "SELECT * FROM assets WHERE local_path IS NOT NULL AND (mime_type IS NULL OR mime_type NOT LIKE 'audio/%') AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved') ORDER BY created_at DESC"
-        ).fetchall()
+    candidate_filter = ""
+    candidate_params: list[str] = []
+    if candidate_ids is not None:
+        if not candidate_ids:
+            rows = []
+        else:
+            placeholders = ", ".join("?" for _ in candidate_ids)
+            candidate_filter = f" AND id IN ({placeholders})"
+            candidate_params = candidate_ids
+    if candidate_ids is None or candidate_filter:
+        with db.connection() as connection:
+            rows = connection.execute(
+                "SELECT * FROM assets WHERE local_path IS NOT NULL AND (mime_type IS NULL OR mime_type NOT LIKE 'audio/%') AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved')" + candidate_filter + " ORDER BY created_at DESC",
+                candidate_params,
+            ).fetchall()
     candidates = sorted((dict(row) for row in rows), key=lambda item: score_asset(item, theme_tokens), reverse=True)
     selected: list[dict[str, Any]] = []
     total = 0.0

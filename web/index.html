@@ -20,9 +20,10 @@
         <nav class="nav-list">
           <button class="nav-item active" data-view="overview"><span>01</span>Overview</button>
           <button class="nav-item" data-view="scout"><span>02</span>Scout</button>
-          <button class="nav-item" data-view="forge"><span>03</span>Forge</button>
-          <button class="nav-item" data-view="outputs"><span>04</span>Outputs</button>
-          <button class="nav-item" data-view="publisher"><span>05</span>Publisher</button>
+          <button class="nav-item" data-view="automations"><span>03</span>Automations</button>
+          <button class="nav-item" data-view="forge"><span>04</span>Forge</button>
+          <button class="nav-item" data-view="outputs"><span>05</span>Outputs</button>
+          <button class="nav-item" data-view="publisher"><span>06</span>Publisher</button>
         </nav>
         <div class="sidebar-footer">
           <div class="local-status"><i></i><span>Local mode</span><b id="health-label">checking</b></div>
@@ -89,8 +90,31 @@
           <div class="panel library-panel"><div class="panel-heading"><div><span class="eyebrow">LIBRARY</span><h3>Source board</h3></div><span class="count-label" id="asset-count">0 assets</span></div><div id="asset-grid" class="asset-grid"></div></div>
         </section>
 
+        <section class="view" id="view-automations">
+          <div class="section-heading"><div><span class="eyebrow accent">PART 02 / AUTOMATION</span><h2>Automations</h2><p>Turn a local watch folder into repeatable review, render, and outbox runs.</p></div></div>
+          <div class="automation-layout">
+            <form class="panel form-panel" id="automation-form">
+              <div class="panel-heading"><div><span class="eyebrow" id="automation-form-eyebrow">AUTOMATION RECIPE</span><h3 id="automation-form-title">New recipe</h3></div><span class="panel-icon">↻</span></div>
+              <label>Name<input name="name" placeholder="Funny cat batch" required /></label>
+              <label>Watch folder<input name="watch_dir" placeholder="/Users/you/Movies/cat-inbox" required /></label>
+              <label>Theme<input name="theme" placeholder="cats, funny, surprise" required /></label>
+              <div class="form-row"><label>Target seconds<input name="duration_target" type="number" min="8" max="180" value="35" /></label><label>Style<select name="style"><option value="kinetic">Kinetic</option><option value="clean">Clean captions</option><option value="narrated">Narrated</option></select></label></div>
+              <div class="form-row"><label>Scan interval minutes<input name="interval_minutes" type="number" min="0" max="10080" value="0" /></label><label>Publish delay minutes<input name="publish_delay_minutes" type="number" min="0" max="43200" value="0" /></label></div>
+              <label>Tags<input name="tags" placeholder="cat, fail, cute" /></label>
+              <label>Title template<input name="title_template" placeholder="{name} · {date}" /></label>
+              <label>Caption template<textarea name="caption_template" rows="2" placeholder="{theme} · {date}"></textarea></label>
+              <div class="form-row"><label>Rights default<select name="default_rights"><option value="pending_review">Needs review</option><option value="owned_distribution">Owned folder</option><option value="licensed_distribution">Licensed folder</option></select></label><label>Music bed<select id="automation-music-select" name="music_asset_id"><option value="">No music bed</option></select></label></div>
+              <fieldset class="automation-platforms"><legend>Prepare destinations</legend><label class="check-row"><input type="checkbox" name="platforms" value="youtube" />YouTube</label><label class="check-row"><input type="checkbox" name="platforms" value="tiktok" />TikTok</label><label class="check-row"><input type="checkbox" name="platforms" value="instagram" />Instagram</label></fieldset>
+              <div class="automation-switches"><label class="check-row"><input type="checkbox" name="auto_render" checked />Render when approved media is available</label><label class="check-row"><input type="checkbox" name="enabled" />Run on its interval</label></div>
+              <div class="form-row"><button class="button primary" id="automation-submit" type="submit">Create automation</button><button class="button secondary" id="automation-cancel" type="button" data-action="cancel-automation" hidden>Cancel edit</button></div>
+              <p class="form-note">Watch-folder files are copied into the local library and deduplicated. A pending-rights recipe will stop at review instead of rendering.</p>
+            </form>
+            <div class="panel"><div class="panel-heading"><div><span class="eyebrow">RECIPES</span><h3>Automation queue</h3></div><span class="count-label" id="automation-count">0 recipes</span></div><div id="automation-list" class="automation-list"></div></div>
+          </div>
+        </section>
+
         <section class="view" id="view-forge">
-          <div class="section-heading"><div><span class="eyebrow accent">PART 02 / PRODUCTION</span><h2>Forge</h2><p>Build a themed cut from production-ready media, then render platform exports.</p></div><button class="button primary" data-action="new-project">+ New project</button></div>
+          <div class="section-heading"><div><span class="eyebrow accent">PART 03 / PRODUCTION</span><h2>Forge</h2><p>Build a themed cut from production-ready media, then render platform exports.</p></div><button class="button primary" data-action="new-project">+ New project</button></div>
           <div class="audio-selection"><label>Music bed<select id="music-asset-select"><option value="">No music bed</option></select></label></div>
           <div class="forge-layout">
             <div class="panel form-panel project-form-wrap"><form id="project-form"><div class="panel-heading"><div><span class="eyebrow">PROJECT BRIEF</span><h3>New edit</h3></div><span class="panel-icon">✦</span></div><label>Project name<input name="name" placeholder="Funniest cat fails" required /></label><label>Theme<input name="theme" placeholder="cats, surprise, funny" required /></label><div class="form-row"><label>Target seconds<input name="duration_target" type="number" min="8" max="180" value="35" /></label><label>Style<select name="style"><option value="kinetic">Kinetic</option><option value="clean">Clean captions</option><option value="narrated">Narrated</option></select></label></div><label>On-screen title<input name="title" placeholder="Cats vs. physics" /></label><label>Caption / subtitle<textarea name="caption" rows="3" placeholder="The confidence. The instant regret."></textarea></label><button class="button primary full" type="submit">Create project</button></form></div>

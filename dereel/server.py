@@ -14,6 +14,17 @@ from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Settings, settings
 from .db import Database, json_dumps, json_loads, new_id, now_iso
+from .automation import (
+    claim_automation,
+    create_automation,
+    delete_automation,
+    due_automations,
+    finish_automation,
+    list_automations,
+    run_automation,
+    set_automation_running,
+    update_automation,
+)
 from .media import safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
     analyze_asset,
@@ -79,6 +90,8 @@ class AppState:
         self.settings = app_settings
         self.db = Database(app_settings.database_path)
         self.stop_event = threading.Event()
+        with self.db.connection() as connection:
+            connection.execute("UPDATE automations SET status = 'idle', updated_at = ? WHERE status IN ('queued', 'running')", (now_iso(),))
 
     def execute_render(self, job_id: str, project_id: str) -> None:
         try:
@@ -94,8 +107,47 @@ class AppState:
             self.db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
             set_job(self.db, job_id, status="failed", message="Render failed", error=str(error))
 
+    def execute_automation(self, job_id: str, automation_id: str) -> None:
+        try:
+            set_automation_running(self.db, automation_id)
+            set_job(self.db, job_id, status="running", message="Scanning watch folder")
+
+            def progress(value: float, message: str) -> None:
+                set_job(self.db, job_id, status="running", progress=round(value, 3), message=message)
+
+            result = run_automation(
+                self.db,
+                automation_id,
+                self.settings.originals_dir,
+                self.settings.output_dir,
+                progress,
+            )
+            finish_automation(self.db, automation_id, result=result)
+            if result.get("project_id"):
+                self.db.update("jobs", "id", job_id, {"project_id": result["project_id"]})
+            set_job(self.db, job_id, status="completed", progress=1, message=f"Automation {result.get('status', 'complete')}", result=result)
+        except Exception as error:
+            finish_automation(self.db, automation_id, error=str(error))
+            set_job(self.db, job_id, status="failed", message="Automation failed", error=str(error))
+
+    def queue_automation(self, automation_id: str) -> dict[str, Any]:
+        if not self.db.get("automations", "id", automation_id):
+            raise KeyError("Automation not found")
+        if not claim_automation(self.db, automation_id):
+            raise ValueError("Automation is already running")
+        job = create_job(self.db, None, "automation")
+        JOB_POOL.submit(self.execute_automation, job["id"], automation_id)
+        return job
+
+    def queue_due_automations(self) -> None:
+        for automation in due_automations(self.db):
+            if claim_automation(self.db, automation["id"]):
+                job = create_job(self.db, None, "automation")
+                JOB_POOL.submit(self.execute_automation, job["id"], automation["id"])
+
     def scheduler_loop(self) -> None:
         while not self.stop_event.wait(15):
+            self.queue_due_automations()
             with self.db.connection() as connection:
                 rows = connection.execute("SELECT * FROM publish_jobs WHERE status = 'ready' AND scheduled_for IS NOT NULL AND scheduled_for != ''").fetchall()
             now = datetime.now(timezone.utc)
@@ -255,6 +307,9 @@ class Handler(BaseHTTPRequestHandler):
                 result.append(item)
             self.send_json({"jobs": result})
             return
+        if path == "/api/automations":
+            self.send_json({"automations": list_automations(self.app.db)})
+            return
         if path == "/api/publishing/accounts":
             with self.app.db.connection() as connection:
                 rows = connection.execute("SELECT * FROM publishing_accounts ORDER BY created_at DESC").fetchall()
@@ -375,6 +430,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/projects":
             self.send_json({"project": create_project(self.app.db, self.read_json())}, HTTPStatus.CREATED)
             return
+        if path == "/api/automations":
+            self.send_json({"automation": create_automation(self.app.db, self.read_json())}, HTTPStatus.CREATED)
+            return
+        match = re.fullmatch(r"/api/automations/([^/]+)/run", path)
+        if match:
+            self.send_json({"job": self.app.queue_automation(match.group(1))}, HTTPStatus.ACCEPTED)
+            return
         if path == "/api/publishing/accounts":
             payload = self.read_json()
             platform = str(payload.get("platform") or "")
@@ -465,6 +527,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error_json(HTTPStatus.NOT_FOUND, "API route not found")
 
     def handle_api_patch(self, path: str) -> None:
+        match = re.fullmatch(r"/api/automations/([^/]+)", path)
+        if match:
+            self.send_json({"automation": update_automation(self.app.db, match.group(1), self.read_json())})
+            return
         match = re.fullmatch(r"/api/assets/([^/]+)", path)
         if match:
             asset_id = match.group(1)
@@ -485,6 +551,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_error_json(HTTPStatus.NOT_FOUND, "API route not found")
 
     def handle_api_delete(self, path: str) -> None:
+        match = re.fullmatch(r"/api/automations/([^/]+)", path)
+        if match:
+            delete_automation(self.app.db, match.group(1))
+            self.send_json({"deleted": match.group(1)})
+            return
         match = re.fullmatch(r"/api/assets/([^/]+)", path)
         if match:
             asset_id = match.group(1)

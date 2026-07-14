@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], providerResults: [], assetFilter: "all", selectedProject: null, publishDraft: { projectId: "" } };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], providerResults: [], assetFilter: "all", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -40,14 +40,15 @@ function showView(view) {
   $("#page-title").textContent = title;
   history.replaceState(null, "", `#${view}`);
   if (view === "scout") renderAssets();
+  if (view === "automations") renderAutomations();
   if (view === "forge") renderProjects();
   if (view === "outputs") renderOutputs();
   if (view === "publisher") renderPublisher();
 }
 
 async function refresh() {
-  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing] = await Promise.all([
-    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"),
+  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing, automations] = await Promise.all([
+    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"), api("/api/automations"),
   ]);
   state.assets = allAssets.assets || [];
   state.visibleAssets = filteredAssets.assets || [];
@@ -55,12 +56,14 @@ async function refresh() {
   state.jobs = jobs.jobs || [];
   state.accounts = accounts.accounts || [];
   state.publishingJobs = publishing.jobs || [];
+  state.automations = automations.automations || [];
   renderDashboard(dashboard);
   renderAssets();
   renderAudioSelect();
   renderProjects();
   renderOutputs();
   renderPublisher();
+  renderAutomations();
   const active = state.jobs.find((job) => ["queued", "running"].includes(job.status));
   $("#latest-job-status").textContent = active ? `${active.message} ${Math.round(active.progress * 100)}%` : "No active jobs";
 }
@@ -105,12 +108,14 @@ function assetCard(asset) {
 }
 
 function renderAudioSelect() {
-  const select = $("#music-asset-select");
-  if (!select) return;
-  const current = select.value;
+  const selects = [$("#music-asset-select"), $("#automation-music-select")].filter(Boolean);
+  if (!selects.length) return;
   const audioAssets = state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
-  select.innerHTML = `<option value="">No music bed</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
-  if (audioAssets.some((asset) => asset.id === current)) select.value = current;
+  selects.forEach((select) => {
+    const current = select.value;
+    select.innerHTML = `<option value="">No music bed</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
+    if (audioAssets.some((asset) => asset.id === current)) select.value = current;
+  });
 }
 
 function renderProjects() {
@@ -150,6 +155,27 @@ function renderPublisher() {
   $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => `<div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${statusPill(job.status)}${job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : ""}</div>`).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
 }
 
+function formatInterval(minutes) {
+  const value = Number(minutes || 0);
+  if (!value) return "manual";
+  if (value < 60) return `every ${value} min`;
+  const hours = value / 60;
+  return Number.isInteger(hours) ? `every ${hours} hr` : `every ${value} min`;
+}
+
+function renderAutomations() {
+  const list = $("#automation-list");
+  if (!list) return;
+  $("#automation-count").textContent = `${state.automations.length} recipe${state.automations.length === 1 ? "" : "s"}`;
+  list.innerHTML = state.automations.length ? state.automations.map((automation) => {
+    const running = ["queued", "running"].includes(automation.status);
+    const toggleLabel = automation.enabled ? "Pause" : "Enable";
+    const lastRun = automation.last_run_at ? `last ${escapeHtml(automation.last_run_at.replace("T", " "))}` : "never run";
+    const detail = `${formatInterval(automation.interval_minutes)} · ${automation.default_rights.replaceAll("_", " ")} · ${lastRun}`;
+    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(automation.name)}</strong><small>${escapeHtml(automation.watch_dir)} · ${escapeHtml(detail)}${automation.last_error ? ` · ${escapeHtml(automation.last_error)}` : ""}</small></div>${statusPill(automation.status)}<button class="row-action" data-edit-automation="${automation.id}">Edit</button><button class="row-action" data-run-automation="${automation.id}" ${running ? "disabled" : ""}>Run</button><button class="row-action" data-toggle-automation="${automation.id}">${toggleLabel}</button><button class="row-action danger-action" data-delete-automation="${automation.id}">Delete</button></div>`;
+  }).join("") : empty("No automations yet", "Create a recipe to watch a local folder and build repeatable releases.");
+}
+
 async function submitUpload(form) {
   const button = $("button[type=submit]", form); button.disabled = true;
   try {
@@ -162,6 +188,66 @@ async function submitUpload(form) {
 async function submitAudioUpload(form) {
   const button = $("button[type=submit]", form); button.disabled = true;
   try { const result = await api("/api/assets/audio-upload", { method: "POST", body: new FormData(form) }); toast(`${result.asset.title} added to audio library`); form.reset(); await refresh(); } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+}
+
+function resetAutomationForm() {
+  const form = $("#automation-form");
+  if (!form) return;
+  state.editingAutomationId = "";
+  form.reset();
+  $("#automation-form-eyebrow").textContent = "AUTOMATION RECIPE";
+  $("#automation-form-title").textContent = "New recipe";
+  $("#automation-submit").textContent = "Create automation";
+  $("#automation-cancel").hidden = true;
+  renderAudioSelect();
+}
+
+function editAutomation(automationId) {
+  const automation = state.automations.find((item) => item.id === automationId);
+  const form = $("#automation-form");
+  if (!automation || !form) return;
+  state.editingAutomationId = automation.id;
+  $("input[name=name]", form).value = automation.name;
+  $("input[name=watch_dir]", form).value = automation.watch_dir;
+  $("input[name=theme]", form).value = automation.theme;
+  $("input[name=duration_target]", form).value = automation.duration_target;
+  $("select[name=style]", form).value = automation.style;
+  $("input[name=interval_minutes]", form).value = automation.interval_minutes;
+  $("input[name=publish_delay_minutes]", form).value = automation.publish_delay_minutes;
+  $("input[name=tags]", form).value = automation.tags.join(", ");
+  $("input[name=title_template]", form).value = automation.title_template;
+  $("textarea[name=caption_template]", form).value = automation.caption_template;
+  $("select[name=default_rights]", form).value = automation.default_rights;
+  $("#automation-music-select").value = automation.music_asset_id || "";
+  $$('input[name="platforms"]', form).forEach((input) => { input.checked = automation.platforms.includes(input.value); });
+  $("input[name=auto_render]", form).checked = automation.auto_render;
+  $("input[name=enabled]", form).checked = automation.enabled;
+  $("#automation-form-eyebrow").textContent = "EDIT AUTOMATION";
+  $("#automation-form-title").textContent = automation.name;
+  $("#automation-submit").textContent = "Save automation";
+  $("#automation-cancel").hidden = false;
+  showView("automations");
+}
+
+async function submitAutomation(form) {
+  const button = $("#automation-submit");
+  button.disabled = true;
+  try {
+    const data = new FormData(form);
+    const payload = Object.fromEntries(data);
+    payload.platforms = data.getAll("platforms").map(String);
+    payload.tags = String(data.get("tags") || "").split(",");
+    payload.duration_target = Number(data.get("duration_target") || 35);
+    payload.interval_minutes = Number(data.get("interval_minutes") || 0);
+    payload.publish_delay_minutes = Number(data.get("publish_delay_minutes") || 0);
+    payload.auto_render = data.has("auto_render");
+    payload.enabled = data.has("enabled");
+    const endpoint = state.editingAutomationId ? `/api/automations/${state.editingAutomationId}` : "/api/automations";
+    await api(endpoint, { method: state.editingAutomationId ? "PATCH" : "POST", body: JSON.stringify(payload) });
+    toast(state.editingAutomationId ? "Automation saved" : "Automation created");
+    resetAutomationForm();
+    await refresh();
+  } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
 }
 
 async function submitPublish(form) {
@@ -185,15 +271,20 @@ async function submitPublish(form) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled } = target.dataset;
+  const { view, viewTarget, action, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
+    if (action === "cancel-automation") { resetAutomationForm(); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }
     if (project) { showView("forge"); const selected = state.projects.find((item) => item.id === project); if (selected) renderInspector(selected); return; }
     if (approveLicensed) { await api(`/api/assets/${approveLicensed}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "licensed_distribution" }) }); toast("Provider license approved"); await refresh(); return; }
     if (approveOwned) { await api(`/api/assets/${approveOwned}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Ownership attested"); await refresh(); return; }
+    if (editAutomationId) { editAutomation(editAutomationId); return; }
+    if (runAutomation) { await api(`/api/automations/${runAutomation}/run`, { method: "POST", body: "{}" }); toast("Automation queued"); await refresh(); return; }
+    if (toggleAutomation) { const automation = state.automations.find((item) => item.id === toggleAutomation); if (automation) { await api(`/api/automations/${toggleAutomation}`, { method: "PATCH", body: JSON.stringify({ enabled: !automation.enabled }) }); toast(automation.enabled ? "Automation paused" : "Automation enabled"); await refresh(); } return; }
+    if (deleteAutomation) { if (!window.confirm("Delete this automation recipe? Imported assets will stay in the library.")) return; await api(`/api/automations/${deleteAutomation}`, { method: "DELETE" }); toast("Automation deleted"); await refresh(); return; }
     if (rejectAsset) { await api(`/api/assets/${rejectAsset}`, { method: "PATCH", body: JSON.stringify({ status: "rejected", rights_status: "blocked" }) }); toast("Asset rejected"); await refresh(); return; }
     if (addAsset) { showView("forge"); const selected = state.selectedProject || (state.projects.length === 1 ? state.projects[0] : null); if (!selected) { toast("Open a project before adding a clip", true); return; } await api(`/api/projects/${selected.id}/assets`, { method: "POST", body: JSON.stringify({ asset_id: addAsset }) }); toast("Clip added to the selected project"); await refresh(); return; }
     if (saveClip || toggleClip) { const card = target.closest(".timeline-clip"); const clipProject = projectId || card?.dataset.projectId; const clipId = saveClip || toggleClip; const body = toggleClip ? { enabled: Number(enabled) } : { in_point: Number($(".clip-in", card).value), out_point: Number($(".clip-out", card).value) }; await api(`/api/projects/${clipProject}/assets/${clipId}`, { method: "POST", body: JSON.stringify(body) }); toast(toggleClip ? "Clip state updated" : "Trim points saved"); await refresh(); return; }
@@ -234,6 +325,7 @@ document.addEventListener("click", handleClick);
 $("#upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitUpload(event.currentTarget); });
 $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
+$("#automation-form").addEventListener("submit", (event) => { event.preventDefault(); submitAutomation(event.currentTarget); });
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
 $("#publish-form").addEventListener("submit", (event) => { event.preventDefault(); submitPublish(event.currentTarget).catch((error) => toast(error.message, true)); });
 $("#account-form").addEventListener("submit", (event) => { event.preventDefault(); submitAccount(event.currentTarget); });
@@ -244,6 +336,6 @@ $("#asset-filters").addEventListener("click", async (event) => { const button = 
 
 const initialView = location.hash.replace("#", "") || "overview";
 updateAccountFields();
-showView(["overview", "scout", "forge", "outputs", "publisher"].includes(initialView) ? initialView : "overview");
+showView(["overview", "scout", "automations", "forge", "outputs", "publisher"].includes(initialView) ? initialView : "overview");
 refresh().catch((error) => { toast(error.message, true); $("#health-label").textContent = "offline"; });
 setInterval(() => refresh().catch(() => {}), 2500);
