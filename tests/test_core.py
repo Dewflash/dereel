@@ -293,18 +293,23 @@ class CoreModelTests(unittest.TestCase):
             root = Path(directory)
             source = root / "source.mp4"
             audio = root / "audio.m4a"
+            sfx = root / "sfx.m4a"
             subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0x31565a:s=320x568:d=1.5", "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000", "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source)], check=True)
             subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=220:duration=1.5", "-c:a", "aac", str(audio)], check=True)
+            subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "sine=frequency=880:duration=0.3", "-c:a", "aac", str(sfx)], check=True)
             db = Database(root / "test.sqlite3")
             video_metadata = validate_video(source)
             audio_metadata = validate_audio(audio)
+            sfx_metadata = validate_audio(sfx)
             video = create_asset(db, kind="media", title="Sample video", local_path=str(source), rights_status="owned_distribution", metadata=video_metadata)
             music = create_asset(db, kind="media", title="Sample bed", local_path=str(audio), mime_type="audio/mp4", rights_status="owned_distribution", metadata=audio_metadata)
-            project = create_project(db, {"name": "Audio check", "theme": "sample", "duration_target": 8, "music_asset_id": music["id"]})
+            effect = create_asset(db, kind="media", title="Sample effect", local_path=str(sfx), mime_type="audio/mp4", rights_status="owned_distribution", metadata=sfx_metadata)
+            project = create_project(db, {"name": "Audio check", "theme": "sample", "duration_target": 8, "audio_tracks": [{"asset_id": music["id"], "role": "music", "volume": .12}, {"asset_id": effect["id"], "role": "sfx", "volume": .7, "start_time": .4}]})
+            self.assertEqual([track["role"] for track in project["audio"]], ["music", "sfx"])
             with db.connection() as connection:
                 connection.execute("INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 1.5, 1, 'test')", (project["id"], video["id"]))
             result = render_project(db, project["id"], root / "outputs", lambda _progress, _message: None)
-            self.assertEqual(result["manifest"]["audio"]["asset_id"], music["id"])
+            self.assertEqual([track["role"] for track in result["manifest"]["audio"]["tracks"]], ["music", "sfx"])
             self.assertTrue((Path(result["output_dir"]) / "final.mp4").is_file())
 
 

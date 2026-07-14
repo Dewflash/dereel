@@ -115,7 +115,11 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .audio-file-label { display: flex; align-items: center; justify-content: center; min-height: 41px; border: 1px dashed #5b493d; border-radius: 5px; background: #1d1916; color: var(--muted); cursor: pointer; }
 .audio-file-label:hover { border-color: var(--accent); color: var(--accent); }
 .audio-file-label input { display: none; }
-.audio-selection { max-width: 390px; margin-bottom: 15px; }
+.audio-selection { margin-bottom: 18px; }
+.audio-track-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 11px; }
+.audio-track-grid label { margin-bottom: 0; }
+.audio-track-grid small { color: var(--dim); font-size: 10px; font-weight: 500; line-height: 1.35; }
+.audio-track-grid input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .provider-panel { margin-bottom: 18px; }
 .provider-search { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; gap: 8px; }
 .provider-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 15px; }
@@ -157,6 +161,8 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .clip-controls input { padding: 7px 6px; font-size: 10px; }
 .clip-actions { display: flex; gap: 5px; margin-top: 9px; }
 .manifest { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 10px; line-height: 1.6; }
+.sound-summary { display: flex; gap: 8px; margin-top: 10px; border-top: 1px solid var(--line); padding-top: 10px; color: var(--muted); font-size: 10px; line-height: 1.5; }
+.sound-summary strong { color: var(--ink); }
 .progress-track { height: 5px; border-radius: 99px; background: #27312d; overflow: hidden; margin-top: 10px; }
 .progress-track i { display: block; height: 100%; background: var(--accent); transition: width .25s ease; }
 
@@ -229,6 +235,7 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
   .provider-search { grid-template-columns: 1fr; }
   .provider-results { grid-template-columns: 1fr; }
   .audio-form-row { grid-template-columns: 1fr; }
+  .audio-track-grid { grid-template-columns: 1fr; }
   .publish-form-grid { grid-template-columns: 1fr; }
   .output-card { grid-template-columns: 110px minmax(0, 1fr); gap: 13px; padding: 11px; }
   .output-info h3 { font-size: 15px; }

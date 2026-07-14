@@ -108,12 +108,13 @@ function assetCard(asset) {
 }
 
 function renderAudioSelect() {
-  const selects = [$("#music-asset-select"), $("#automation-music-select")].filter(Boolean);
+  const selects = [$("#music-asset-select"), $("#sfx-asset-select"), $("#voiceover-asset-select"), $("#automation-music-select")].filter(Boolean);
   if (!selects.length) return;
   const audioAssets = state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
+  const emptyLabels = { "music-asset-select": "No music bed", "sfx-asset-select": "No sound effect", "voiceover-asset-select": "No voiceover", "automation-music-select": "No music bed" };
   selects.forEach((select) => {
     const current = select.value;
-    select.innerHTML = `<option value="">No music bed</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
+    select.innerHTML = `<option value="">${emptyLabels[select.id] || "No audio"}</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
     if (audioAssets.some((asset) => asset.id === current)) select.value = current;
   });
 }
@@ -130,9 +131,11 @@ function renderProjects() {
 function renderInspector(project) {
   state.selectedProject = project;
   const clips = project.assets || [];
+  const audio = project.audio || [];
   const manifest = project.manifest || {};
   const clipMarkup = clips.map((clip, index) => { const clipOut = clip.out_point ?? clip.duration; return `<div class="timeline-clip ${clip.enabled ? "" : "disabled"}" data-project-id="${project.id}" data-clip-id="${clip.asset_id}"><b>${String(index + 1).padStart(2, "0")}</b><strong title="${escapeHtml(clip.title)}">${escapeHtml(clip.title)}</strong><div class="clip-controls"><label>In<input class="clip-in" type="number" min="0" max="${clip.duration}" step="0.1" value="${clip.in_point}" /></label><label>Out<input class="clip-out" type="number" min="0.1" max="${clip.duration}" step="0.1" value="${clipOut}" /></label></div><small>${formatDuration(clipOut - clip.in_point)} · ${escapeHtml(clip.selected_by)}</small><div class="clip-actions"><button class="mini-button" data-save-clip="${clip.asset_id}">Save</button><button class="mini-button" data-toggle-clip="${clip.asset_id}" data-enabled="${clip.enabled ? "0" : "1"}">${clip.enabled ? "Disable" : "Enable"}</button></div></div>`; }).join("");
-  $("#project-inspector").innerHTML = `<div class="inspector-header"><div><span class="eyebrow accent">EDIT INSPECTOR</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.theme)} · ${formatDuration(project.duration_target)} target · ${clips.length} clips</p></div><div class="inspector-actions"><button class="button secondary" data-plan-project="${project.id}">✦ Plan edit</button><button class="button primary" data-render-project="${project.id}">▶ Render</button></div></div><div class="timeline">${clips.length ? clipMarkup : empty("No clips selected", "Plan automatically or add clips from Scout.")}</div><div class="manifest"><strong>Planner</strong> ${escapeHtml(manifest.planner || "Manual")}${manifest.selected_duration ? ` · ${formatDuration(manifest.selected_duration)} selected` : ""}<div class="progress-track"><i style="width:${project.status === "ready" ? 100 : 0}%"></i></div></div>`;
+  const audioSummary = audio.length ? audio.map((track) => `${escapeHtml(track.role)}: ${escapeHtml(track.title)} @ ${track.start_time}s`).join(" · ") : "No added audio tracks";
+  $("#project-inspector").innerHTML = `<div class="inspector-header"><div><span class="eyebrow accent">EDIT INSPECTOR</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.theme)} · ${formatDuration(project.duration_target)} target · ${clips.length} clips</p></div><div class="inspector-actions"><button class="button secondary" data-plan-project="${project.id}">✦ Plan edit</button><button class="button primary" data-render-project="${project.id}">▶ Render</button></div></div><div class="timeline">${clips.length ? clipMarkup : empty("No clips selected", "Plan automatically or add clips from Scout.")}</div><div class="manifest"><strong>Planner</strong> ${escapeHtml(manifest.planner || "Manual")}${manifest.selected_duration ? ` · ${formatDuration(manifest.selected_duration)} selected` : ""}<div class="progress-track"><i style="width:${project.status === "ready" ? 100 : 0}%"></i></div></div><div class="sound-summary"><strong>Sound</strong><span>${audioSummary}</span></div>`;
 }
 
 function renderOutputs() {
@@ -322,7 +325,29 @@ async function submitReference(form) {
 }
 
 async function submitProject(form) {
-  try { const data = Object.fromEntries(new FormData(form)); const result = await api("/api/projects", { method: "POST", body: JSON.stringify({ ...data, music_asset_id: $("#music-asset-select")?.value || "", duration_target: Number(data.duration_target) }) }); toast("Project created"); form.reset(); $("input[name=duration_target]", form).value = 35; $("#music-asset-select").value = ""; await refresh(); renderInspector(result.project); } catch (error) { toast(error.message, true); }
+  try {
+    const data = Object.fromEntries(new FormData(form));
+    const audioTracks = [];
+    const musicAssetId = $("#music-asset-select")?.value || "";
+    const sfxAssetId = $("#sfx-asset-select")?.value || "";
+    const voiceoverAssetId = $("#voiceover-asset-select")?.value || "";
+    if (musicAssetId) audioTracks.push({ asset_id: musicAssetId, role: "music", volume: 0.16, start_time: 0 });
+    if (sfxAssetId) audioTracks.push({ asset_id: sfxAssetId, role: "sfx", volume: Number($("#sfx-volume")?.value || 0.55), start_time: Number($("#sfx-start-time")?.value || 0) });
+    if (voiceoverAssetId) audioTracks.push({ asset_id: voiceoverAssetId, role: "voiceover", volume: Number($("#voiceover-volume")?.value || 1), start_time: Number($("#voiceover-start-time")?.value || 0) });
+    const result = await api("/api/projects", { method: "POST", body: JSON.stringify({ ...data, audio_tracks: audioTracks, duration_target: Number(data.duration_target) }) });
+    toast("Project created");
+    form.reset();
+    $("input[name=duration_target]", form).value = 35;
+    $("#music-asset-select").value = "";
+    $("#sfx-asset-select").value = "";
+    $("#voiceover-asset-select").value = "";
+    $("#sfx-start-time").value = 0;
+    $("#voiceover-start-time").value = 0;
+    $("#sfx-volume").value = 0.55;
+    $("#voiceover-volume").value = 1;
+    await refresh();
+    renderInspector(result.project);
+  } catch (error) { toast(error.message, true); }
 }
 
 async function submitAccount(form) {

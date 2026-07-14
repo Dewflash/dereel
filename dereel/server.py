@@ -176,7 +176,7 @@ class AppState:
                     self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": str(error), "updated_at": now_iso()})
 
 
-STATE = AppState(settings)
+STATE: AppState | None = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -187,6 +187,9 @@ class Handler(BaseHTTPRequestHandler):
 
     @property
     def app(self) -> AppState:
+        global STATE
+        if STATE is None:
+            STATE = AppState(settings)
         return STATE
 
     def send_json(self, payload: Any, status: int = HTTPStatus.OK) -> None:

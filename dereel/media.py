@@ -228,17 +228,38 @@ def add_text_overlay(source: Path, destination: Path, title: str, subtitle: str 
         subtitle_file.unlink(missing_ok=True)
 
 
-def mix_audio_bed(source: Path, audio: Path, destination: Path, volume: float = 0.16) -> None:
-    level = max(0.0, min(float(volume), 1.0))
-    command = [
-        "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
-        "-i", str(source), "-stream_loop", "-1", "-i", str(audio),
-        "-filter_complex", f"[1:a]volume={level:.3f}[music];[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[a]",
+def mix_audio_tracks(source: Path, tracks: list[dict[str, Any]], destination: Path) -> None:
+    if not tracks:
+        raise ValueError("At least one audio track is required")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    inputs = ["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", "-i", str(source)]
+    filters: list[str] = []
+    labels = ["[0:a]"]
+    for index, track in enumerate(tracks, start=1):
+        role = str(track.get("role") or "sfx")
+        if role == "music":
+            inputs.extend(["-stream_loop", "-1"])
+        inputs.extend(["-i", str(track["source"])])
+        level = max(0.0, min(float(track.get("volume", 0.16)), 1.0))
+        delay = max(0, min(int(round(float(track.get("start_time", 0)) * 1000)), 3_600_000))
+        filter_spec = f"[{index}:a]volume={level:.3f}"
+        if delay:
+            filter_spec += f",adelay={delay}|{delay}"
+        label = f"track{index}"
+        filters.append(f"{filter_spec}[{label}]")
+        labels.append(f"[{label}]")
+    filters.append("".join(labels) + f"amix=inputs={len(labels)}:duration=first:dropout_transition=2[a]")
+    command = inputs + [
+        "-filter_complex", ";".join(filters),
         "-map", "0:v:0", "-map", "[a]", "-c:v", "copy", "-c:a", "aac", "-b:a", "160k", "-shortest", "-movflags", "+faststart", str(destination),
     ]
     result = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "FFmpeg could not mix the audio bed")
+        raise RuntimeError(result.stderr.strip() or "FFmpeg could not mix the audio tracks")
+
+
+def mix_audio_bed(source: Path, audio: Path, destination: Path, volume: float = 0.16) -> None:
+    mix_audio_tracks(source, [{"source": audio, "role": "music", "volume": volume, "start_time": 0}], destination)
 
 
 def write_caption_track(destination: Path, text: str, duration: float) -> bool:

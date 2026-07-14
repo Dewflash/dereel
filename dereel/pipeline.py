@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import add_text_overlay, concat_segments, mix_audio_bed, normalize_segment, sha256_file, validate_audio, validate_video, write_caption_track
+from .media import add_text_overlay, concat_segments, mix_audio_tracks, normalize_segment, sha256_file, validate_audio, validate_video, write_caption_track
 
 
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
+AUDIO_ROLES = {"music", "sfx", "voiceover"}
 
 
 def review_flags(row: dict[str, Any]) -> list[str]:
@@ -37,11 +38,26 @@ def asset_view(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def get_project_audio(db: Database, project_id: str) -> list[dict[str, Any]]:
+    with db.connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT pa.project_id, pa.asset_id, pa.role, pa.volume, pa.start_time,
+                   a.title, a.local_path, a.mime_type, a.duration, a.rights_status, a.status
+            FROM project_audio pa JOIN assets a ON a.id = pa.asset_id
+            WHERE pa.project_id = ? ORDER BY pa.role, pa.start_time, pa.asset_id
+            """,
+            (project_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
 def project_view(db: Database, row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["settings"] = json_loads(result.pop("settings_json", "{}"), {})
     result["manifest"] = json_loads(result.pop("manifest_json", "{}"), {})
     result["assets"] = get_project_assets(db, row["id"])
+    result["audio"] = get_project_audio(db, row["id"])
     return result
 
 
@@ -199,13 +215,8 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     caption = str(payload.get("caption") or "")[:500]
     duration_target = max(8, min(float(payload.get("duration_target") or 35), 180))
     style = str(payload.get("style") or "kinetic")[:40]
-    music_asset_id = str(payload.get("music_asset_id") or "")
-    if music_asset_id:
-        music_asset = db.get("assets", "id", music_asset_id)
-        if not music_asset or not music_asset.get("local_path") or not str(music_asset.get("mime_type") or "").startswith("audio/"):
-            raise ValueError("Selected music is not a valid audio asset")
-        if music_asset.get("rights_status") not in PRODUCTION_RIGHTS or music_asset.get("status") not in {"ready", "approved"}:
-            raise ValueError("Selected music is not cleared for production")
+    audio_tracks = _normalize_audio_tracks(db, payload)
+    music_track = next((track for track in audio_tracks if track["role"] == "music"), None)
     db.insert(
         "projects",
         {
@@ -219,13 +230,71 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
             "title": title,
             "caption": caption,
             "output_dir": "",
-            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": True, "music_asset_id": music_asset_id, "music_volume": max(0, min(float(payload.get("music_volume") or 0.16), 1))}),
+            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": True, "music_asset_id": music_track["asset_id"] if music_track else "", "music_volume": music_track["volume"] if music_track else 0.16, "audio_tracks": audio_tracks}),
             "manifest_json": json_dumps({}),
             "created_at": now,
             "updated_at": now,
         },
     )
+    with db.connection() as connection:
+        for track in audio_tracks:
+            connection.execute(
+                "INSERT INTO project_audio(project_id, asset_id, role, volume, start_time) VALUES (?, ?, ?, ?, ?)",
+                (project_id, track["asset_id"], track["role"], track["volume"], track["start_time"]),
+            )
     return project_view(db, db.get("projects", "id", project_id) or {})
+
+
+def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return round(max(minimum, min(parsed, maximum)), 3)
+
+
+def _normalize_audio_tracks(db: Database, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_tracks = payload.get("audio_tracks")
+    if raw_tracks is not None and not isinstance(raw_tracks, list):
+        raise ValueError("audio_tracks must be a list")
+    candidates: list[dict[str, Any]] = [item for item in raw_tracks if isinstance(item, dict)] if isinstance(raw_tracks, list) else []
+    fallback = (
+        ("music", "music_asset_id", "music_volume", "music_start_time", 0.16, 0.0),
+        ("sfx", "sfx_asset_id", "sfx_volume", "sfx_start_time", 0.55, 0.0),
+        ("voiceover", "voiceover_asset_id", "voiceover_volume", "voiceover_start_time", 1.0, 0.0),
+    )
+    seen = {(str(item.get("asset_id") or ""), str(item.get("role") or "")) for item in candidates}
+    for role, asset_key, volume_key, start_key, default_volume, default_start in fallback:
+        asset_id = str(payload.get(asset_key) or "").strip()
+        if asset_id and (asset_id, role) not in seen:
+            candidates.append({"asset_id": asset_id, "role": role, "volume": payload.get(volume_key, default_volume), "start_time": payload.get(start_key, default_start)})
+            seen.add((asset_id, role))
+    unique_candidates: list[dict[str, Any]] = []
+    candidate_keys: set[tuple[str, str]] = set()
+    for item in candidates:
+        key = (str(item.get("asset_id") or "").strip(), str(item.get("role") or "").strip().lower())
+        if key in candidate_keys:
+            continue
+        candidate_keys.add(key)
+        unique_candidates.append(item)
+    candidates = unique_candidates
+    if len(candidates) > 8:
+        raise ValueError("A project can contain at most eight audio tracks")
+    tracks: list[dict[str, Any]] = []
+    for item in candidates:
+        asset_id = str(item.get("asset_id") or "").strip()
+        role = str(item.get("role") or "").strip().lower()
+        if not asset_id:
+            continue
+        if role not in AUDIO_ROLES:
+            raise ValueError(f"Unsupported audio role: {role or 'empty'}")
+        asset = db.get("assets", "id", asset_id)
+        if not asset or not asset.get("local_path") or not str(asset.get("mime_type") or "").startswith("audio/"):
+            raise ValueError(f"Selected {role} is not a valid audio asset")
+        if asset.get("rights_status") not in PRODUCTION_RIGHTS or asset.get("status") not in {"ready", "approved"}:
+            raise ValueError(f"Selected {role} is not cleared for production")
+        tracks.append({"asset_id": asset_id, "role": role, "volume": _bounded_float(item.get("volume"), 0.16, 0.0, 1.0), "start_time": _bounded_float(item.get("start_time"), 0.0, 0.0, 3600.0)})
+    return tracks
 
 
 def score_asset(asset: dict[str, Any], theme_tokens: set[str]) -> float:
@@ -365,19 +434,35 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         concat_segments(segments, base)
         progress(0.78, "Joined the edit")
         settings = json_loads(project.get("settings_json"), {})
-        music_asset_id = settings.get("music_asset_id")
-        if music_asset_id:
-            audio_asset = db.get("assets", "id", music_asset_id)
-            if not audio_asset or audio_asset.get("rights_status") not in PRODUCTION_RIGHTS or not audio_asset.get("local_path"):
-                raise ValueError("Selected music is not cleared for production")
-            audio_source = Path(audio_asset["local_path"])
-            validate_audio(audio_source)
+        audio_tracks = get_project_audio(db, project_id)
+        if not audio_tracks and settings.get("music_asset_id"):
+            legacy_music = db.get("assets", "id", str(settings["music_asset_id"]))
+            if legacy_music:
+                audio_tracks = [{
+                    "asset_id": legacy_music["id"],
+                    "role": "music",
+                    "volume": settings.get("music_volume", 0.16),
+                    "start_time": 0,
+                    **legacy_music,
+                }]
+        if audio_tracks:
+            mix_inputs: list[dict[str, Any]] = []
+            manifest_tracks: list[dict[str, Any]] = []
+            for track in audio_tracks:
+                if track.get("rights_status") not in PRODUCTION_RIGHTS or track.get("status") not in {"ready", "approved"} or not track.get("local_path") or not str(track.get("mime_type") or "").startswith("audio/"):
+                    raise ValueError(f"Selected audio '{track.get('title') or track.get('asset_id')}' is not cleared for production")
+                audio_source = Path(track["local_path"])
+                validate_audio(audio_source)
+                volume = _bounded_float(track.get("volume"), 0.16, 0.0, 1.0)
+                start_time = _bounded_float(track.get("start_time"), 0.0, 0.0, 3600.0)
+                mix_inputs.append({"source": audio_source, "role": track["role"], "volume": volume, "start_time": start_time})
+                manifest_tracks.append({"asset_id": track["asset_id"], "title": track.get("title", ""), "role": track["role"], "source": str(audio_source), "volume": volume, "start_time": start_time})
             mixed = output_dir / "mixed.mp4"
-            mix_audio_bed(base, audio_source, mixed, float(settings.get("music_volume", 0.16)))
+            mix_audio_tracks(base, mix_inputs, mixed)
             base.unlink(missing_ok=True)
             base = mixed
-            manifest["audio"] = {"asset_id": music_asset_id, "source": str(audio_source), "volume": float(settings.get("music_volume", 0.16))}
-            progress(0.84, "Mixed the audio bed")
+            manifest["audio"] = {"tracks": manifest_tracks}
+            progress(0.84, f"Mixed {len(mix_inputs)} audio track{'' if len(mix_inputs) == 1 else 's'}")
         titled = output_dir / "final.mp4"
         overlay_applied = add_text_overlay(base, titled, project["title"] or project["name"], project["caption"])
         base.unlink(missing_ok=True)
@@ -394,8 +479,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         manifest_path = output_dir / "render-manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
         credit_assets = [item["asset_id"] for item in enabled]
-        if music_asset_id:
-            credit_assets.append(music_asset_id)
+        credit_assets.extend(track["asset_id"] for track in manifest.get("audio", {}).get("tracks", []))
         (output_dir / "credits.json").write_text(json.dumps({"assets": credit_assets}, indent=2))
         db.update("projects", "id", project_id, {"status": "ready", "output_dir": str(output_dir), "manifest_json": json_dumps(manifest), "updated_at": now_iso()})
         progress(1.0, "Render complete")
