@@ -40,8 +40,8 @@ The YouTube adapter uses the video upload API and defaults to private visibility
 1. Save online items as Scout references or import cleared local media.
 2. Mark production media as owned or licensed after review.
 3. Create a Forge project and plan the edit automatically, or add clips manually.
-4. Render the project. The output folder contains `final.mp4`, platform copies, `render-manifest.json`, and `credits.json`.
-5. Prepare publishing packages from Outputs. Connectors can later replace the outbox step without changing the asset or project model.
+4. Adjust clip trim points or disable individual clips in the Forge inspector, then render the project. The output folder contains `final.mp4`, platform copies, `render-manifest.json`, and `credits.json`.
+5. Prepare publishing packages from Outputs. Explicitly scheduled jobs are checked by the local scheduler; unscheduled jobs remain approval-first in the outbox.
 
 ## Important boundary
 

@@ -4,6 +4,7 @@ import json
 import mimetypes
 import re
 import threading
+from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +27,7 @@ from .pipeline import (
     project_view,
     render_project,
     set_job,
+    update_project_asset,
 )
 from .publisher import account_view, create_publish_jobs, platform_capabilities, publish_job, publish_job_view
 from .scout import configured_providers, import_provider_asset, search as search_provider
@@ -76,6 +78,7 @@ class AppState:
         app_settings.ensure_directories()
         self.settings = app_settings
         self.db = Database(app_settings.database_path)
+        self.stop_event = threading.Event()
 
     def execute_render(self, job_id: str, project_id: str) -> None:
         try:
@@ -90,6 +93,28 @@ class AppState:
         except Exception as error:
             self.db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
             set_job(self.db, job_id, status="failed", message="Render failed", error=str(error))
+
+    def scheduler_loop(self) -> None:
+        while not self.stop_event.wait(15):
+            with self.db.connection() as connection:
+                rows = connection.execute("SELECT * FROM publish_jobs WHERE status = 'ready' AND scheduled_for IS NOT NULL AND scheduled_for != ''").fetchall()
+            now = datetime.now(timezone.utc)
+            for row in rows:
+                scheduled_for = row["scheduled_for"]
+                try:
+                    due_at = datetime.fromisoformat(scheduled_for.replace("Z", "+00:00"))
+                    if due_at.tzinfo is None:
+                        due_at = due_at.replace(tzinfo=timezone.utc)
+                except ValueError:
+                    self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": "Invalid scheduled_for timestamp", "updated_at": now_iso()})
+                    continue
+                if due_at > now:
+                    continue
+                try:
+                    remote_id = publish_job(self.db, dict(row))
+                    self.db.update("publish_jobs", "id", row["id"], {"status": "published", "remote_id": remote_id, "error": "", "updated_at": now_iso()})
+                except Exception as error:
+                    self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": str(error), "updated_at": now_iso()})
 
 
 STATE = AppState(settings)
@@ -390,6 +415,10 @@ class Handler(BaseHTTPRequestHandler):
                 connection.execute("INSERT OR REPLACE INTO project_assets(project_id, asset_id, order_index, in_point, out_point, note, enabled, selected_by) VALUES (?, ?, ?, ?, ?, ?, 1, 'manual')", (project_id, asset_id, order, float(payload.get("in_point") or 0), payload.get("out_point"), str(payload.get("note") or "")))
             self.send_json({"project": project_view(self.app.db, self.app.db.get("projects", "id", project_id) or {})})
             return
+        match = re.fullmatch(r"/api/projects/([^/]+)/assets/([^/]+)", path)
+        if match:
+            self.send_json({"clip": update_project_asset(self.app.db, match.group(1), match.group(2), self.read_json())})
+            return
         match = re.fullmatch(r"/api/projects/([^/]+)/publish", path)
         if match:
             project = self.app.db.get("projects", "id", match.group(1))
@@ -490,10 +519,14 @@ def serve(app_settings: Settings = settings) -> None:
     global STATE
     STATE = AppState(app_settings)
     httpd = ThreadingHTTPServer((app_settings.host, app_settings.port), Handler)
+    scheduler = threading.Thread(target=STATE.scheduler_loop, name="dereel-scheduler", daemon=True)
+    scheduler.start()
     print(f"DeReel running at http://{app_settings.host}:{app_settings.port}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        STATE.stop_event.set()
+        scheduler.join(timeout=2)
         httpd.server_close()

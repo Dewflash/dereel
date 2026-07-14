@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import create_asset, create_project, render_project, score_asset
+from dereel.pipeline import create_asset, create_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
 from dereel.publisher import account_view, platform_capabilities
 
@@ -52,6 +52,18 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(capabilities["youtube"]["mode"], "direct_upload")
         self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
         self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
+
+    def test_project_clip_trim_and_enable_state_are_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            asset = create_asset(db, kind="media", title="Clip", rights_status="owned_distribution", metadata={"duration": 10, "width": 720, "height": 1280})
+            project = create_project(db, {"name": "Trim check", "theme": "sample"})
+            with db.connection() as connection:
+                connection.execute("INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 10, 1, 'test')", (project["id"], asset["id"]))
+            updated = update_project_asset(db, project["id"], asset["id"], {"in_point": 2, "out_point": 6, "enabled": 0})
+            self.assertEqual((updated["in_point"], updated["out_point"], updated["enabled"]), (2.0, 6.0, False))
+            with self.assertRaises(ValueError):
+                update_project_asset(db, project["id"], asset["id"], {"in_point": 7, "out_point": 4})
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_creates_vertical_outputs_and_manifest(self) -> None:

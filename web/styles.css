@@ -147,9 +147,14 @@ input:focus, select:focus, textarea:focus { border-color: var(--accent); box-sha
 .inspector-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .timeline { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 5px; }
 .timeline-clip { min-width: 145px; border: 1px solid var(--line-bright); border-radius: 5px; background: #111715; padding: 12px; }
+.timeline-clip.disabled { opacity: .48; }
 .timeline-clip b { display: block; color: var(--accent); font-size: 10px; }
 .timeline-clip strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 9px; font-size: 11px; }
 .timeline-clip small { display: block; color: var(--muted); margin-top: 6px; font-size: 10px; }
+.clip-controls { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 10px; }
+.clip-controls label { gap: 4px; margin-bottom: 0; font-size: 9px; }
+.clip-controls input { padding: 7px 6px; font-size: 10px; }
+.clip-actions { display: flex; gap: 5px; margin-top: 9px; }
 .manifest { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 16px; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .progress-track { height: 5px; border-radius: 99px; background: #27312d; overflow: hidden; margin-top: 10px; }
 .progress-track i { display: block; height: 100%; background: var(--accent); transition: width .25s ease; }

@@ -48,6 +48,33 @@ def get_project_assets(db: Database, project_id: str) -> list[dict[str, Any]]:
     return result
 
 
+def update_project_asset(db: Database, project_id: str, asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    with db.connection() as connection:
+        row = connection.execute(
+            "SELECT pa.*, a.duration FROM project_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.project_id = ? AND pa.asset_id = ?",
+            (project_id, asset_id),
+        ).fetchone()
+        if not row:
+            raise KeyError("Clip is not in this project")
+        current = dict(row)
+        duration = float(current.get("duration") or 0)
+        in_point = max(0.0, float(payload.get("in_point", current["in_point"])))
+        out_point_value = payload.get("out_point", current["out_point"])
+        out_point = duration if out_point_value in (None, "") else float(out_point_value)
+        if in_point >= out_point or out_point > duration + 0.01:
+            raise ValueError("Clip trim points must be inside the source duration")
+        enabled = int(payload.get("enabled", current["enabled"]))
+        if enabled not in (0, 1):
+            raise ValueError("Clip enabled state must be 0 or 1")
+        order_index = max(0, int(payload.get("order_index", current["order_index"])))
+        note = str(payload.get("note", current["note"]))[:240]
+        connection.execute(
+            "UPDATE project_assets SET in_point = ?, out_point = ?, enabled = ?, order_index = ?, note = ? WHERE project_id = ? AND asset_id = ?",
+            (in_point, out_point, enabled, order_index, note, project_id, asset_id),
+        )
+    return next(item for item in get_project_assets(db, project_id) if item["asset_id"] == asset_id)
+
+
 def create_asset(
     db: Database,
     *,
