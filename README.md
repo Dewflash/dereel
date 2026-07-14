@@ -33,7 +33,7 @@ export DEREEL_TIKTOK_ACCESS_TOKEN="..."
 export DEREEL_INSTAGRAM_ACCESS_TOKEN="..."
 ```
 
-The YouTube adapter uses the video upload API and defaults to private visibility. TikTok and Instagram remain explicit capability states until their app review, consent, and media-hosting requirements are configured.
+The YouTube adapter uses the video upload API and defaults to private visibility. TikTok uses the supported upload-to-inbox draft path when configured, so the creator still completes the final TikTok editing/posting action. Instagram remains gated on a publicly reachable media URL and the account's publishing permissions.
 
 ## Workflow
 

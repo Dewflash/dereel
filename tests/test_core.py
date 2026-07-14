@@ -5,12 +5,13 @@ import unittest
 import shutil
 import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
-from dereel.publisher import account_view, platform_capabilities
+from dereel.publisher import account_view, platform_capabilities, publish_tiktok_draft
 
 
 class CoreModelTests(unittest.TestCase):
@@ -52,6 +53,42 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(capabilities["youtube"]["mode"], "direct_upload")
         self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
         self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
+
+    def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: bytes = b"{}", status: int = 200, headers: dict[str, str] | None = None) -> None:
+                self._body = body
+                self.status = status
+                self.headers = headers or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return self._body
+
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "tiktok.mp4"
+            media.write_bytes(b"0123456789")
+            requests = []
+
+            def fake_urlopen(request, timeout):
+                requests.append((request, timeout))
+                if len(requests) == 1:
+                    return FakeResponse(b'{"data":{"publish_id":"publish_1","upload_url":"https://upload.example/video"},"error":{"code":"ok"}}')
+                return FakeResponse(status=201)
+
+            with patch("dereel.publisher.urllib.request.urlopen", side_effect=fake_urlopen):
+                result = publish_tiktok_draft({"media_path": str(media)}, "token")
+
+            self.assertEqual(result, "draft:publish_1")
+            self.assertEqual(len(requests), 2)
+            self.assertEqual(requests[0][0].full_url, "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/")
+            self.assertEqual(requests[1][0].get_header("Content-range"), "bytes 0-9/10")
+            self.assertEqual(requests[1][0].data, b"0123456789")
 
     def test_project_clip_trim_and_enable_state_are_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

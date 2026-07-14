@@ -200,6 +200,58 @@ def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
     return str(video_id)
 
 
+def publish_tiktok_draft(payload: dict[str, Any], access_token: str) -> str:
+    path = Path(payload["media_path"])
+    if not path.is_file():
+        raise ValueError("TikTok export is missing")
+    total_size = path.stat().st_size
+    if total_size <= 0:
+        raise ValueError("TikTok export is empty")
+    chunk_size = total_size if total_size < 5 * 1024 * 1024 else min(10 * 1024 * 1024, total_size)
+    total_chunks = (total_size + chunk_size - 1) // chunk_size
+    init_body = {"source_info": {"source": "FILE_UPLOAD", "video_size": total_size, "chunk_size": chunk_size, "total_chunk_count": total_chunks}}
+    init_request = urllib.request.Request(
+        "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/",
+        data=json.dumps(init_body).encode(),
+        headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json; charset=UTF-8"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(init_request, timeout=60) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as error:
+        raise _http_error(error) from error
+    error = result.get("error", {})
+    if error.get("code") not in (None, "ok"):
+        raise RuntimeError(f"TikTok returned {error.get('code')}: {error.get('message', '')}")
+    data = result.get("data") or {}
+    upload_url = data.get("upload_url")
+    publish_id = data.get("publish_id")
+    if not upload_url or not publish_id:
+        raise RuntimeError("TikTok did not return a draft upload URL")
+    with path.open("rb") as source:
+        offset = 0
+        while offset < total_size:
+            chunk = source.read(chunk_size)
+            if not chunk:
+                break
+            end = offset + len(chunk) - 1
+            upload_request = urllib.request.Request(
+                upload_url,
+                data=chunk,
+                headers={"Content-Type": "video/mp4", "Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{total_size}"},
+                method="PUT",
+            )
+            try:
+                with urllib.request.urlopen(upload_request, timeout=900) as response:
+                    if response.status not in (200, 201, 206):
+                        raise RuntimeError(f"TikTok upload returned HTTP {response.status}")
+            except urllib.error.HTTPError as error:
+                raise _http_error(error) from error
+            offset = end + 1
+    return f"draft:{publish_id}"
+
+
 def publish_job(db: Database, job: dict[str, Any]) -> str:
     payload = json.loads(job.get("payload_json", "{}"))
     account = db.get("publishing_accounts", "id", job.get("account_id", "")) if job.get("account_id") else None
@@ -219,5 +271,5 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
     if job["platform"] == "instagram":
         raise ValueError("Instagram requires a publicly reachable video URL for its media container")
     if job["platform"] == "tiktok":
-        raise ValueError("TikTok publishing requires an approved Direct Post or draft-upload app")
+        return publish_tiktok_draft(payload, token)
     raise ValueError("Unsupported publisher")
