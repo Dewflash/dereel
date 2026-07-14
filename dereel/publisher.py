@@ -75,18 +75,24 @@ def create_publish_jobs(
     for platform in platforms:
         if platform not in PLATFORM_SPECS:
             raise ValueError(f"Unsupported platform: {platform}")
+        export = output_dir / f"{platform}.mp4"
+        problems = validate_export(export, platform)
+        if problems:
+            raise ValueError(f"{PLATFORM_SPECS[platform]['label']}: " + "; ".join(problems))
         with db.connection() as connection:
             existing = connection.execute(
                 "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready') ORDER BY created_at DESC LIMIT 1",
                 (project["id"], platform),
             ).fetchone()
         if existing:
-            jobs.append(dict(existing))
+            existing_item = dict(existing)
+            existing_payload = json.loads(existing_item.get("payload_json", "{}"))
+            if existing_payload.get("media_path") != str(export):
+                existing_payload.update({"title": project.get("title") or project.get("name"), "caption": project.get("caption", ""), "media_path": str(export)})
+                db.update("publish_jobs", "id", existing_item["id"], {"payload_json": json_dumps(existing_payload), "updated_at": now_iso()})
+                existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
+            jobs.append(existing_item)
             continue
-        export = output_dir / f"{platform}.mp4"
-        problems = validate_export(export, platform)
-        if problems:
-            raise ValueError(f"{PLATFORM_SPECS[platform]['label']}: " + "; ".join(problems))
         job_id = new_id("publish")
         now = now_iso()
         selected_account_id = account_id
@@ -197,6 +203,10 @@ def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
 def publish_job(db: Database, job: dict[str, Any]) -> str:
     payload = json.loads(job.get("payload_json", "{}"))
     account = db.get("publishing_accounts", "id", job.get("account_id", "")) if job.get("account_id") else None
+    if not account:
+        with db.connection() as connection:
+            account_row = connection.execute("SELECT * FROM publishing_accounts WHERE platform = ? ORDER BY created_at LIMIT 1", (job["platform"],)).fetchone()
+        account = dict(account_row) if account_row else None
     if not account:
         raise ValueError(f"No {job['platform']} account is connected to this publish job")
     config = json.loads(account.get("config_json", "{}"))

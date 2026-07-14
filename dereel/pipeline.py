@@ -127,7 +127,7 @@ def analyze_asset(db: Database, asset_id: str) -> dict[str, Any]:
     if not asset.get("local_path"):
         return asset_view(asset)
     path = Path(asset["local_path"])
-    metadata = validate_video(path)
+    metadata = validate_audio(path) if str(asset.get("mime_type") or "").startswith("audio/") else validate_video(path)
     metadata["fingerprint"] = sha256_file(path)
     db.update(
         "assets",
@@ -226,7 +226,7 @@ def plan_project(db: Database, project_id: str) -> dict[str, Any]:
     theme_tokens = {token.lower() for token in project["theme"].replace(",", " ").split() if len(token) > 2}
     with db.connection() as connection:
         rows = connection.execute(
-            "SELECT * FROM assets WHERE local_path IS NOT NULL AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved') ORDER BY created_at DESC"
+            "SELECT * FROM assets WHERE local_path IS NOT NULL AND (mime_type IS NULL OR mime_type NOT LIKE 'audio/%') AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved') ORDER BY created_at DESC"
         ).fetchall()
     candidates = sorted((dict(row) for row in rows), key=lambda item: score_asset(item, theme_tokens), reverse=True)
     selected: list[dict[str, Any]] = []

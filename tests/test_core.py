@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import create_asset, create_project, render_project, score_asset, update_project_asset
+from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
 from dereel.publisher import account_view, platform_capabilities
 
@@ -64,6 +64,15 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual((updated["in_point"], updated["out_point"], updated["enabled"]), (2.0, 6.0, False))
             with self.assertRaises(ValueError):
                 update_project_asset(db, project["id"], asset["id"], {"in_point": 7, "out_point": 4})
+
+    def test_planner_never_selects_audio_assets_as_clips(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            video = create_asset(db, kind="media", title="Funny video", local_path="/tmp/video.mp4", mime_type="video/mp4", tags=["funny"], rights_status="owned_distribution", metadata={"duration": 5, "width": 720, "height": 1280})
+            create_asset(db, kind="media", title="Funny music", local_path="/tmp/music.m4a", mime_type="audio/mp4", tags=["funny", "music"], rights_status="owned_distribution", metadata={"duration": 10, "has_audio": True})
+            project = create_project(db, {"name": "Planner check", "theme": "funny music", "duration_target": 5})
+            planned = plan_project(db, project["id"])
+            self.assertEqual([clip["asset_id"] for clip in planned["assets"]], [video["id"]])
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_creates_vertical_outputs_and_manifest(self) -> None:

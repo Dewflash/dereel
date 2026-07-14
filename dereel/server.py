@@ -410,6 +410,8 @@ class Handler(BaseHTTPRequestHandler):
             asset = self.app.db.get("assets", "id", asset_id)
             if not asset:
                 raise KeyError("Asset not found")
+            if str(asset.get("mime_type") or "").startswith("audio/"):
+                raise ValueError("Audio assets belong in a music bed, not the video timeline")
             with self.app.db.connection() as connection:
                 order = connection.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM project_assets WHERE project_id = ?", (project_id,)).fetchone()[0]
                 connection.execute("INSERT OR REPLACE INTO project_assets(project_id, asset_id, order_index, in_point, out_point, note, enabled, selected_by) VALUES (?, ?, ?, ?, ?, ?, 1, 'manual')", (project_id, asset_id, order, float(payload.get("in_point") or 0), payload.get("out_point"), str(payload.get("note") or "")))
