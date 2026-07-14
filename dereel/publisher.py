@@ -354,6 +354,10 @@ def publish_instagram_reel(payload: dict[str, Any], account: dict[str, Any], acc
 
 
 def publish_job(db: Database, job: dict[str, Any]) -> str:
+    if job.get("status") == "published":
+        raise ValueError("Publish job is already marked published")
+    if job.get("status") not in {"ready", "failed"}:
+        raise ValueError("Publish job is not ready to run")
     payload = json.loads(job.get("payload_json", "{}"))
     account = db.get("publishing_accounts", "id", job.get("account_id", "")) if job.get("account_id") else None
     if not account:

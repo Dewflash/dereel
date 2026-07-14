@@ -12,7 +12,7 @@ from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
-from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_tiktok_draft
+from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_tiktok_draft
 
 
 class CoreModelTests(unittest.TestCase):
@@ -69,6 +69,10 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(capabilities["youtube"]["mode"], "direct_upload")
         self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
         self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
+
+    def test_published_jobs_cannot_be_replayed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "already marked published"):
+            publish_job(None, {"status": "published"})
 
     def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
         class FakeResponse:
