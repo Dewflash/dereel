@@ -135,7 +135,7 @@ function renderOutputs() {
 function renderPublisher() {
   $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · OAuth connection pending</small></div>${statusPill(account.status)}</div>`).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
-  $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => `<div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}</small></div>${statusPill(job.status)}${job.status === "ready" ? `<button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : ""}</div>`).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
+  $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => `<div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${statusPill(job.status)}${job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : ""}</div>`).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
 }
 
 async function submitUpload(form) {
@@ -154,7 +154,7 @@ async function submitAudioUpload(form) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, project, planProject, renderProject, approveAsset, rejectAsset, addAsset, publishProject, markPublished, providerSave, providerImport } = target.dataset;
+  const { view, viewTarget, action, project, planProject, renderProject, approveAsset, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -169,6 +169,7 @@ async function handleClick(event) {
     if (planProject) { await api(`/api/projects/${planProject}/plan`, { method: "POST", body: "{}" }); toast("Edit plan updated"); await refresh(); return; }
     if (renderProject) { const result = await api(`/api/projects/${renderProject}/render`, { method: "POST", body: "{}" }); toast(`Render queued: ${result.job.id}`); await refresh(); return; }
     if (publishProject) { showView("publisher"); const projectItem = state.projects.find((item) => item.id === publishProject); if (projectItem) { const platforms = ["youtube", "tiktok", "instagram"]; await api(`/api/projects/${publishProject}/publish`, { method: "POST", body: JSON.stringify({ platforms }) }); toast("Publish packages prepared"); await refresh(); } return; }
+    if (runPublish) { await api(`/api/publishing/jobs/${runPublish}/publish`, { method: "POST", body: "{}" }); toast("Published successfully"); await refresh(); return; }
     if (markPublished) { await api(`/api/publishing/jobs/${markPublished}/mark-published`, { method: "POST", body: JSON.stringify({ remote_id: "manual" }) }); toast("Marked as posted"); await refresh(); return; }
   } catch (error) { toast(error.message, true); }
 }

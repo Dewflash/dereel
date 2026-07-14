@@ -25,6 +25,16 @@ export PEXELS_API_KEY="..."
 export PIXABAY_API_KEY="..."
 ```
 
+Publishing adapters read tokens from the environment and never write them into SQLite:
+
+```bash
+export DEREEL_YOUTUBE_ACCESS_TOKEN="..."
+export DEREEL_TIKTOK_ACCESS_TOKEN="..."
+export DEREEL_INSTAGRAM_ACCESS_TOKEN="..."
+```
+
+The YouTube adapter uses the video upload API and defaults to private visibility. TikTok and Instagram remain explicit capability states until their app review, consent, and media-hosting requirements are configured.
+
 ## Workflow
 
 1. Save online items as Scout references or import cleared local media.

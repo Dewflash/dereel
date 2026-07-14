@@ -10,6 +10,7 @@ from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, render_project, score_asset
 from dereel.scout import _host_allowed
+from dereel.publisher import account_view, platform_capabilities
 
 
 class CoreModelTests(unittest.TestCase):
@@ -45,6 +46,12 @@ class CoreModelTests(unittest.TestCase):
         self.assertTrue(_host_allowed("pixabay", "https://cdn.pixabay.com/video.mp4"))
         self.assertFalse(_host_allowed("pexels", "https://example.com/video.mp4"))
         self.assertFalse(_host_allowed("pexels", "http://videos.pexels.com/video.mp4"))
+
+    def test_publisher_capabilities_are_explicit(self) -> None:
+        capabilities = {item["id"]: item for item in platform_capabilities()}
+        self.assertEqual(capabilities["youtube"]["mode"], "direct_upload")
+        self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
+        self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_creates_vertical_outputs_and_manifest(self) -> None:

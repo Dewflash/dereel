@@ -27,7 +27,7 @@ from .pipeline import (
     render_project,
     set_job,
 )
-from .publisher import create_publish_jobs, publish_job_view
+from .publisher import account_view, create_publish_jobs, platform_capabilities, publish_job, publish_job_view
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
@@ -233,7 +233,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/publishing/accounts":
             with self.app.db.connection() as connection:
                 rows = connection.execute("SELECT * FROM publishing_accounts ORDER BY created_at DESC").fetchall()
-            self.send_json({"accounts": [dict(row) for row in rows]})
+            self.send_json({"accounts": [account_view(dict(row)) for row in rows]})
+            return
+        if path == "/api/publishing/platforms":
+            self.send_json({"platforms": platform_capabilities()})
             return
         if path == "/api/publishing/jobs":
             with self.app.db.connection() as connection:
@@ -394,8 +397,23 @@ class Handler(BaseHTTPRequestHandler):
                 raise KeyError("Project not found")
             payload = self.read_json()
             platforms = list(payload.get("platforms") or ["youtube"])
-            jobs = create_publish_jobs(self.app.db, project, platforms, payload.get("scheduled_for"))
+            jobs = create_publish_jobs(self.app.db, project, platforms, payload.get("scheduled_for"), payload.get("account_id"))
             self.send_json({"jobs": [publish_job_view(job) for job in jobs]}, HTTPStatus.CREATED)
+            return
+        match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/publish", path)
+        if match:
+            job_id = match.group(1)
+            job = self.app.db.get("publish_jobs", "id", job_id)
+            if not job:
+                raise KeyError("Publish job not found")
+            try:
+                remote_id = publish_job(self.app.db, job)
+            except Exception as error:
+                self.app.db.update("publish_jobs", "id", job_id, {"status": "failed", "error": str(error), "updated_at": now_iso()})
+                self.send_error_json(HTTPStatus.CONFLICT, str(error))
+                return
+            self.app.db.update("publish_jobs", "id", job_id, {"status": "published", "remote_id": remote_id, "error": "", "updated_at": now_iso()})
+            self.send_json({"job": publish_job_view(self.app.db.get("publish_jobs", "id", job_id) or {})})
             return
         match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/mark-published", path)
         if match:
