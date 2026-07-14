@@ -93,6 +93,23 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
 
+    def test_automation_audio_controls_persist_and_feed_new_projects(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            music = create_asset(db, kind="media", title="Music", local_path=str(root / "music.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "has_audio": True})
+            effect = create_asset(db, kind="media", title="SFX", local_path=str(root / "effect.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 1, "has_audio": True})
+            voiceover = create_asset(db, kind="media", title="Voiceover", local_path=str(root / "voiceover.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "has_audio": True})
+            automation = create_automation(db, {"name": "Sounded batch", "watch_dir": directory, "music_asset_id": music["id"], "music_volume": 0, "sfx_asset_id": effect["id"], "sfx_volume": .7, "sfx_start_time": .4, "voiceover_asset_id": voiceover["id"], "voiceover_volume": .8, "voiceover_start_time": 1.2, "auto_render": False})
+            self.assertEqual((automation["music_volume"], automation["sfx_start_time"], automation["voiceover_start_time"]), (0.0, 0.4, 1.2))
+            video = create_asset(db, kind="media", title="Video", local_path=str(root / "video.mp4"), mime_type="video/mp4", rights_status="owned_distribution", metadata={"duration": 3, "width": 720, "height": 1280}, automation_id=automation["id"])
+            with patch("dereel.automation.scan_watch_folder", return_value={"found": 1, "imported": [video], "duplicates": [], "errors": []}), patch("dereel.automation.create_project", return_value={"id": "project_audio"}) as creator, patch("dereel.automation.plan_project", return_value={"assets": [{"asset_id": video["id"]}]}):
+                result = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual(result["status"], "planned")
+            tracks = creator.call_args.args[1]["audio_tracks"]
+            self.assertEqual([track["role"] for track in tracks], ["music", "sfx", "voiceover"])
+            self.assertEqual((tracks[0]["volume"], tracks[1]["start_time"], tracks[2]["volume"]), (0.0, 0.4, 0.8))
+
     def test_automation_submission_failure_is_persisted_and_releases_claim(self) -> None:
         class RejectingPool:
             def submit(self, *_args, **_kwargs):

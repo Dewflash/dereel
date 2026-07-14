@@ -36,6 +36,14 @@ def _as_int(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(parsed, maximum))
 
 
+def _as_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        parsed = default
+    return round(max(minimum, min(parsed, maximum)), 3)
+
+
 def _tags(value: Any) -> list[str]:
     if isinstance(value, str):
         values = value.split(",")
@@ -60,14 +68,14 @@ def automation_view(row: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def _validate_music(db: Database, music_asset_id: str) -> None:
-    if not music_asset_id:
+def _validate_audio_asset(db: Database, asset_id: str, role: str) -> None:
+    if not asset_id:
         return
-    asset = db.get("assets", "id", music_asset_id)
+    asset = db.get("assets", "id", asset_id)
     if not asset or not asset.get("local_path") or not str(asset.get("mime_type") or "").startswith("audio/"):
-        raise ValueError("Automation music is not a valid audio asset")
+        raise ValueError(f"Automation {role} is not a valid audio asset")
     if asset.get("rights_status") not in PRODUCTION_RIGHTS or asset.get("status") not in {"ready", "approved"}:
-        raise ValueError("Automation music is not cleared for production")
+        raise ValueError(f"Automation {role} is not cleared for production")
 
 
 def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -92,7 +100,11 @@ def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str
     provider_limit = _as_int(payload.get("provider_limit", current.get("provider_limit", 12)), 12, 1, 24)
     platforms = _platforms(payload.get("platforms", current.get("platforms", [])))
     music_asset_id = str(payload.get("music_asset_id", current.get("music_asset_id", "")) or "").strip()
-    _validate_music(db, music_asset_id)
+    sfx_asset_id = str(payload.get("sfx_asset_id", current.get("sfx_asset_id", "")) or "").strip()
+    voiceover_asset_id = str(payload.get("voiceover_asset_id", current.get("voiceover_asset_id", "")) or "").strip()
+    _validate_audio_asset(db, music_asset_id, "music")
+    _validate_audio_asset(db, sfx_asset_id, "sound effect")
+    _validate_audio_asset(db, voiceover_asset_id, "voiceover")
     return {
         "name": str(payload.get("name", current.get("name", "Untitled automation")) or "Untitled automation").strip()[:120],
         "watch_dir": str(Path(watch_dir).expanduser().resolve()) if watch_dir else "",
@@ -108,6 +120,13 @@ def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str
         "tags_json": json_dumps(_tags(payload.get("tags", current.get("tags", [])))),
         "default_rights": default_rights,
         "music_asset_id": music_asset_id,
+        "music_volume": _as_float(payload.get("music_volume", current.get("music_volume", 0.16)), 0.16, 0.0, 1.0),
+        "sfx_asset_id": sfx_asset_id,
+        "sfx_volume": _as_float(payload.get("sfx_volume", current.get("sfx_volume", 0.55)), 0.55, 0.0, 1.0),
+        "sfx_start_time": _as_float(payload.get("sfx_start_time", current.get("sfx_start_time", 0)), 0.0, 0.0, 3600.0),
+        "voiceover_asset_id": voiceover_asset_id,
+        "voiceover_volume": _as_float(payload.get("voiceover_volume", current.get("voiceover_volume", 1.0)), 1.0, 0.0, 1.0),
+        "voiceover_start_time": _as_float(payload.get("voiceover_start_time", current.get("voiceover_start_time", 0)), 0.0, 0.0, 3600.0),
         "platforms_json": json_dumps(platforms),
         "interval_minutes": _as_int(payload.get("interval_minutes", current.get("interval_minutes", 0)), 0, 0, 10080),
         "publish_delay_minutes": _as_int(payload.get("publish_delay_minutes", current.get("publish_delay_minutes", 0)), 0, 0, 43200),
@@ -344,6 +363,13 @@ def run_automation(
     if can_reuse_project:
         project = last_project
     else:
+        audio_tracks = []
+        if automation["music_asset_id"]:
+            audio_tracks.append({"asset_id": automation["music_asset_id"], "role": "music", "volume": automation["music_volume"], "start_time": 0})
+        if automation["sfx_asset_id"]:
+            audio_tracks.append({"asset_id": automation["sfx_asset_id"], "role": "sfx", "volume": automation["sfx_volume"], "start_time": automation["sfx_start_time"]})
+        if automation["voiceover_asset_id"]:
+            audio_tracks.append({"asset_id": automation["voiceover_asset_id"], "role": "voiceover", "volume": automation["voiceover_volume"], "start_time": automation["voiceover_start_time"]})
         project = create_project(
             db,
             {
@@ -353,7 +379,7 @@ def run_automation(
                 "style": automation["style"],
                 "title": _template(automation["title_template"], automation, run_date) or automation["name"],
                 "caption": _template(automation["caption_template"], automation, run_date) or automation["theme"],
-                "music_asset_id": automation["music_asset_id"],
+                "audio_tracks": audio_tracks,
             },
         )
     planned = plan_project(db, project["id"], candidate_ids)

@@ -108,10 +108,10 @@ function assetCard(asset) {
 }
 
 function renderAudioSelect() {
-  const selects = [$("#music-asset-select"), $("#sfx-asset-select"), $("#voiceover-asset-select"), $("#automation-music-select")].filter(Boolean);
+  const selects = [$("#music-asset-select"), $("#sfx-asset-select"), $("#voiceover-asset-select"), $("#automation-music-select"), $("#automation-sfx-select"), $("#automation-voiceover-select")].filter(Boolean);
   if (!selects.length) return;
   const audioAssets = state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
-  const emptyLabels = { "music-asset-select": "No music bed", "sfx-asset-select": "No sound effect", "voiceover-asset-select": "No voiceover", "automation-music-select": "No music bed" };
+  const emptyLabels = { "music-asset-select": "No music bed", "sfx-asset-select": "No sound effect", "voiceover-asset-select": "No voiceover", "automation-music-select": "No music bed", "automation-sfx-select": "No sound effect", "automation-voiceover-select": "No voiceover" };
   selects.forEach((select) => {
     const current = select.value;
     select.innerHTML = `<option value="">${emptyLabels[select.id] || "No audio"}</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
@@ -240,6 +240,13 @@ function editAutomation(automationId) {
   $("textarea[name=caption_template]", form).value = automation.caption_template;
   $("select[name=default_rights]", form).value = automation.default_rights;
   $("#automation-music-select").value = automation.music_asset_id || "";
+  $("input[name=music_volume]", form).value = automation.music_volume ?? 0.16;
+  $("#automation-sfx-select").value = automation.sfx_asset_id || "";
+  $("input[name=sfx_start_time]", form).value = automation.sfx_start_time ?? 0;
+  $("input[name=sfx_volume]", form).value = automation.sfx_volume ?? 0.55;
+  $("#automation-voiceover-select").value = automation.voiceover_asset_id || "";
+  $("input[name=voiceover_start_time]", form).value = automation.voiceover_start_time ?? 0;
+  $("input[name=voiceover_volume]", form).value = automation.voiceover_volume ?? 1;
   $$('input[name="platforms"]', form).forEach((input) => { input.checked = automation.platforms.includes(input.value); });
   $("input[name=auto_render]", form).checked = automation.auto_render;
   $("input[name=enabled]", form).checked = automation.enabled;
@@ -262,6 +269,11 @@ async function submitAutomation(form) {
     payload.duration_target = Number(data.get("duration_target") || 35);
     payload.interval_minutes = Number(data.get("interval_minutes") || 0);
     payload.publish_delay_minutes = Number(data.get("publish_delay_minutes") || 0);
+    payload.music_volume = Number(data.get("music_volume") ?? 0.16);
+    payload.sfx_start_time = Number(data.get("sfx_start_time") ?? 0);
+    payload.sfx_volume = Number(data.get("sfx_volume") ?? 0.55);
+    payload.voiceover_start_time = Number(data.get("voiceover_start_time") ?? 0);
+    payload.voiceover_volume = Number(data.get("voiceover_volume") ?? 1);
     payload.auto_render = data.has("auto_render");
     payload.enabled = data.has("enabled");
     const endpoint = state.editingAutomationId ? `/api/automations/${state.editingAutomationId}` : "/api/automations";

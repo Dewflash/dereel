@@ -134,6 +134,13 @@ class Database:
                     tags_json TEXT NOT NULL DEFAULT '[]',
                     default_rights TEXT NOT NULL CHECK(default_rights IN ('pending_review', 'owned_distribution', 'licensed_distribution')),
                     music_asset_id TEXT,
+                    music_volume REAL NOT NULL DEFAULT 0.16,
+                    sfx_asset_id TEXT,
+                    sfx_volume REAL NOT NULL DEFAULT 0.55,
+                    sfx_start_time REAL NOT NULL DEFAULT 0,
+                    voiceover_asset_id TEXT,
+                    voiceover_volume REAL NOT NULL DEFAULT 1.0,
+                    voiceover_start_time REAL NOT NULL DEFAULT 0,
                     platforms_json TEXT NOT NULL DEFAULT '[]',
                     interval_minutes INTEGER NOT NULL DEFAULT 0,
                     publish_delay_minutes INTEGER NOT NULL DEFAULT 0,
@@ -195,7 +202,7 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '2');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '3');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -208,6 +215,13 @@ class Database:
                 "provider": "TEXT NOT NULL DEFAULT ''",
                 "search_query": "TEXT NOT NULL DEFAULT ''",
                 "provider_limit": "INTEGER NOT NULL DEFAULT 12",
+                "music_volume": "REAL NOT NULL DEFAULT 0.16",
+                "sfx_asset_id": "TEXT",
+                "sfx_volume": "REAL NOT NULL DEFAULT 0.55",
+                "sfx_start_time": "REAL NOT NULL DEFAULT 0",
+                "voiceover_asset_id": "TEXT",
+                "voiceover_volume": "REAL NOT NULL DEFAULT 1.0",
+                "voiceover_start_time": "REAL NOT NULL DEFAULT 0",
             }
             for column, definition in automation_migrations.items():
                 if column not in automation_columns:
