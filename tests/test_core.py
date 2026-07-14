@@ -14,6 +14,8 @@ from dereel.pipeline import create_asset, create_project, plan_project, render_p
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_tiktok_draft
+from dereel.config import Settings
+from dereel.server import AppState
 
 
 class CoreModelTests(unittest.TestCase):
@@ -90,6 +92,33 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in due_automations(db)], [automation["id"]])
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
+
+    def test_automation_submission_failure_is_persisted_and_releases_claim(self) -> None:
+        class RejectingPool:
+            def submit(self, *_args, **_kwargs):
+                raise RuntimeError("worker pool unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(
+                Settings(
+                    root=root,
+                    data_dir=root / "data",
+                    database_path=root / "data" / "test.sqlite3",
+                    originals_dir=root / "library",
+                    audio_dir=root / "audio",
+                    output_dir=root / "outputs",
+                    web_dir=root,
+                )
+            )
+            automation = create_automation(db=app.db, payload={"name": "Rejected", "watch_dir": str(root)})
+            with patch("dereel.server.JOB_POOL", RejectingPool()):
+                job = app.queue_automation(automation["id"])
+            self.assertEqual(job["status"], "failed")
+            self.assertEqual(job["error"], "worker pool unavailable")
+            stored = app.db.get("automations", "id", automation["id"])
+            self.assertEqual(stored["status"], "failed")
+            self.assertEqual(stored["last_error"], "worker pool unavailable")
 
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

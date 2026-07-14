@@ -130,20 +130,27 @@ class AppState:
             finish_automation(self.db, automation_id, error=str(error))
             set_job(self.db, job_id, status="failed", message="Automation failed", error=str(error))
 
+    def submit_automation(self, job: dict[str, Any], automation_id: str) -> dict[str, Any]:
+        try:
+            JOB_POOL.submit(self.execute_automation, job["id"], automation_id)
+        except Exception as error:
+            finish_automation(self.db, automation_id, error=str(error))
+            set_job(self.db, job["id"], status="failed", message="Automation could not start", error=str(error))
+        return self.db.get("jobs", "id", job["id"]) or job
+
     def queue_automation(self, automation_id: str) -> dict[str, Any]:
         if not self.db.get("automations", "id", automation_id):
             raise KeyError("Automation not found")
         if not claim_automation(self.db, automation_id):
             raise ValueError("Automation is already running")
         job = create_job(self.db, None, "automation")
-        JOB_POOL.submit(self.execute_automation, job["id"], automation_id)
-        return job
+        return self.submit_automation(job, automation_id)
 
     def queue_due_automations(self) -> None:
         for automation in due_automations(self.db):
             if claim_automation(self.db, automation["id"]):
                 job = create_job(self.db, None, "automation")
-                JOB_POOL.submit(self.execute_automation, job["id"], automation["id"])
+                self.submit_automation(job, automation["id"])
 
     def scheduler_loop(self) -> None:
         while not self.stop_event.wait(15):
