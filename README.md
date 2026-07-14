@@ -41,7 +41,7 @@ Instagram's public base URL must serve the local app's output route, for example
 ## Workflow
 
 1. Save online items as Scout references or import cleared local media.
-2. Mark production media as owned or licensed after review.
+2. Review media individually or select a visible batch in Scout, then mark production media as owned or licensed.
 3. Create a Forge project, choose an optional looping music bed plus a sound effect or voiceover with volume/start-time controls, and plan the edit automatically or add clips manually.
 4. Adjust clip trim points or disable individual clips in the Forge inspector, then render the project. The output folder contains `final.mp4`, platform copies, `render-manifest.json`, and `credits.json`.
 5. Prepare publishing packages from Outputs. Explicitly scheduled jobs are checked by the local scheduler; unscheduled jobs remain approval-first in the outbox.

@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], providerResults: [], assetFilter: "all", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], providerResults: [], assetFilter: "all", selectedAssets: new Set(), selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -87,8 +87,21 @@ function empty(title, detail) { return `<div class="empty-state"><span>·</span>
 
 function renderAssets() {
   const assets = state.visibleAssets;
+  const selectable = new Set(assets.filter(isReviewableAsset).map((asset) => asset.id));
+  state.selectedAssets = new Set([...state.selectedAssets].filter((id) => selectable.has(id)));
   $("#asset-count").textContent = `${assets.length} asset${assets.length === 1 ? "" : "s"}`;
   $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", state.assetFilter === "references" ? "Save a source URL to Scout." : "Import a cleared video to populate the board.");
+  renderReviewToolbar();
+}
+
+function isReviewableAsset(asset) {
+  return asset.kind === "media" && Boolean(asset.local_path) && ["pending_review", "private_reference"].includes(asset.rights_status);
+}
+
+function renderReviewToolbar() {
+  const count = state.selectedAssets.size;
+  $("#selected-asset-count").textContent = `${count} selected`;
+  $$('[data-bulk-action]').forEach((button) => { button.disabled = count === 0; });
 }
 
 function renderProviderResults(results = []) {
@@ -98,13 +111,14 @@ function renderProviderResults(results = []) {
 
 function assetCard(asset) {
   const preview = asset.local_path ? (String(asset.mime_type || "").startsWith("audio/") ? "♫" : `<video src="/api/assets/${asset.id}/stream" muted preload="metadata"></video>`) : "↗";
+  const selector = isReviewableAsset(asset) ? `<label class="asset-select" title="Select for batch review"><input type="checkbox" data-asset-select="${asset.id}" ${state.selectedAssets.has(asset.id) ? "checked" : ""} /></label>` : "";
   const tags = (asset.tags || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
-  const canApprove = asset.kind === "media" && ["pending_review", "private_reference"].includes(asset.rights_status);
+  const canApprove = isReviewableAsset(asset);
   const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status);
   const providerImport = ["pexels", "pixabay"].includes(String(asset.platform || "").toLowerCase());
   const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
   const flags = (asset.review_flags || []).map((flag) => `<span class="risk-flag">${escapeHtml(flag.replaceAll("-", " "))}</span>`).join("");
-  return `<article class="asset-card"><div class="asset-preview">${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}<button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+  return `<article class="asset-card"><div class="asset-preview">${selector}${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}<button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
 }
 
 function renderAudioSelect() {
@@ -303,13 +317,25 @@ async function submitPublish(form) {
   await refresh();
 }
 
+async function submitBulkReview(action) {
+  if (!state.selectedAssets.size) { toast("Select at least one asset", true); return; }
+  const labels = { approve_licensed: "Provider licenses approved", approve_owned: "Ownership attested", reject: "Assets rejected" };
+  const result = await api("/api/assets/bulk", { method: "PATCH", body: JSON.stringify({ ids: [...state.selectedAssets], action }) });
+  state.selectedAssets.clear();
+  toast(`${result.assets.length} asset${result.assets.length === 1 ? "" : "s"} updated: ${labels[action] || "Review updated"}`);
+  await refresh();
+}
+
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
+    if (action === "select-visible") { state.visibleAssets.filter(isReviewableAsset).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
+    if (action === "clear-selection") { state.selectedAssets.clear(); renderAssets(); return; }
+    if (bulkAction) { await submitBulkReview(bulkAction); return; }
     if (action === "cancel-automation") { resetAutomationForm(); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }
     if (project) { showView("forge"); const selected = state.projects.find((item) => item.id === project); if (selected) renderInspector(selected); return; }
@@ -377,7 +403,16 @@ async function submitProviderSearch(form) {
   try { const data = Object.fromEntries(new FormData(form)); const payload = await api(`/api/scout/search?provider=${encodeURIComponent(data.provider)}&q=${encodeURIComponent(data.query)}`); renderProviderResults(payload.results || []); toast(`${payload.results?.length || 0} source${payload.results?.length === 1 ? "" : "s"} found`); } catch (error) { renderProviderResults([]); toast(error.message, true); } finally { button.disabled = false; }
 }
 
+function handleAssetSelection(event) {
+  const input = event.target.closest("input[data-asset-select]");
+  if (!input) return;
+  if (input.checked) state.selectedAssets.add(input.dataset.assetSelect);
+  else state.selectedAssets.delete(input.dataset.assetSelect);
+  renderReviewToolbar();
+}
+
 document.addEventListener("click", handleClick);
+document.addEventListener("change", handleAssetSelection);
 $("#upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitUpload(event.currentTarget); });
 $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });

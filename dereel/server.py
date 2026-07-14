@@ -29,6 +29,7 @@ from .media import safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
     analyze_asset,
     asset_view,
+    bulk_review_assets,
     create_asset,
     create_job,
     create_project,
@@ -541,6 +542,13 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             self.send_json({"automation": update_automation(self.app.db, match.group(1), self.read_json())})
             return
+        if path == "/api/assets/bulk":
+            payload = self.read_json()
+            asset_ids = payload.get("ids")
+            if not isinstance(asset_ids, list):
+                raise ValueError("ids must be a list")
+            self.send_json({"assets": bulk_review_assets(self.app.db, asset_ids, str(payload.get("action") or ""))})
+            return
         match = re.fullmatch(r"/api/assets/([^/]+)", path)
         if match:
             asset_id = match.group(1)
@@ -553,6 +561,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Unsupported asset status")
             if "rights_status" in values and values["rights_status"] not in {"private_reference", "owned_distribution", "licensed_distribution", "blocked", "pending_review"}:
                 raise ValueError("Unsupported rights status")
+            if values.get("rights_status") in {"owned_distribution", "licensed_distribution"}:
+                if asset.get("kind") != "media" or not asset.get("local_path"):
+                    raise ValueError("Only local media can be approved for production")
+                if asset.get("rights_status") not in {"pending_review", "private_reference"}:
+                    raise ValueError("Asset is not awaiting review")
             if values:
                 values["updated_at"] = now_iso()
                 self.app.db.update("assets", "id", asset_id, values)

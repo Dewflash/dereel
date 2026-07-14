@@ -10,7 +10,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
+from dereel.pipeline import bulk_review_assets, create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_tiktok_draft
@@ -47,6 +47,21 @@ class CoreModelTests(unittest.TestCase):
             local = create_asset(db, kind="media", title="Owned clip", platform="local", local_path="/tmp/owned.mp4", rights_status="pending_review", metadata={"fingerprint": "owned"})
             self.assertEqual(provider["review_flags"], ["provider-license-review"])
             self.assertEqual(local["review_flags"], ["rights-attestation"])
+
+    def test_bulk_review_updates_rights_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            first = create_asset(db, kind="media", title="First", local_path="/tmp/first.mp4", rights_status="pending_review")
+            second = create_asset(db, kind="media", title="Second", local_path="/tmp/second.mp4", rights_status="pending_review")
+            approved = bulk_review_assets(db, [first["id"], second["id"]], "approve_licensed")
+            self.assertEqual([asset["rights_status"] for asset in approved], ["licensed_distribution", "licensed_distribution"])
+            rejected = create_asset(db, kind="media", title="Rejected", local_path="/tmp/rejected.mp4", rights_status="pending_review")
+            self.assertEqual(bulk_review_assets(db, [rejected["id"]], "reject")[0]["rights_status"], "blocked")
+            pending = create_asset(db, kind="media", title="Pending", local_path="/tmp/pending.mp4", rights_status="pending_review")
+            reference = create_asset(db, kind="reference", title="Reference", source_url="https://example.com")
+            with self.assertRaisesRegex(ValueError, "awaiting review"):
+                bulk_review_assets(db, [pending["id"], reference["id"]], "approve_owned")
+            self.assertEqual(db.get("assets", "id", pending["id"])["rights_status"], "pending_review")
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_automation_imports_reviews_renders_and_deduplicates_batches(self) -> None:

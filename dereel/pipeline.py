@@ -206,6 +206,43 @@ def list_assets(db: Database, view: str = "all") -> list[dict[str, Any]]:
     return [asset_view(dict(row)) for row in rows]
 
 
+def bulk_review_assets(db: Database, asset_ids: list[str], action: str) -> list[dict[str, Any]]:
+    actions = {
+        "approve_owned": ("approved", "owned_distribution"),
+        "approve_licensed": ("approved", "licensed_distribution"),
+        "reject": ("rejected", "blocked"),
+    }
+    if action not in actions:
+        raise ValueError("Unsupported bulk review action")
+    normalized_ids = list(dict.fromkeys(str(asset_id).strip() for asset_id in asset_ids if str(asset_id).strip()))
+    if not normalized_ids:
+        raise ValueError("Select at least one asset")
+    if len(normalized_ids) > 200:
+        raise ValueError("Bulk review is limited to 200 assets per action")
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with db.connection() as connection:
+        rows = connection.execute(f"SELECT * FROM assets WHERE id IN ({placeholders})", normalized_ids).fetchall()
+        if len(rows) != len(normalized_ids):
+            raise KeyError("One or more selected assets no longer exist")
+        invalid = [
+            dict(row)
+            for row in rows
+            if row["kind"] != "media"
+            or not row["local_path"]
+            or row["rights_status"] not in {"pending_review", "private_reference"}
+        ]
+        if invalid:
+            raise ValueError(f"{len(invalid)} selected asset(s) are not awaiting review")
+        status, rights_status = actions[action]
+        connection.execute(
+            f"UPDATE assets SET status = ?, rights_status = ?, updated_at = ? WHERE id IN ({placeholders})",
+            [status, rights_status, now_iso(), *normalized_ids],
+        )
+        updated = connection.execute(f"SELECT * FROM assets WHERE id IN ({placeholders})", normalized_ids).fetchall()
+    by_id = {row["id"]: asset_view(dict(row)) for row in updated}
+    return [by_id[asset_id] for asset_id in normalized_ids]
+
+
 def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     project_id = new_id("project")
     now = now_iso()
