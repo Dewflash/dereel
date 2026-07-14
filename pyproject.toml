@@ -1,0 +1,13 @@
+[project]
+name = "dereel"
+version = "0.1.0"
+description = "Local-first short-form video sourcing and production studio"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+dereel = "dereel.cli:main"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

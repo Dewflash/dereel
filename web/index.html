@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101313" />
+    <title>DeReel Studio</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <div class="brand-lockup">
+          <div class="brand-mark">DR</div>
+          <div>
+            <strong>DeReel</strong>
+            <span>local studio</span>
+          </div>
+        </div>
+        <nav class="nav-list">
+          <button class="nav-item active" data-view="overview"><span>01</span>Overview</button>
+          <button class="nav-item" data-view="scout"><span>02</span>Scout</button>
+          <button class="nav-item" data-view="forge"><span>03</span>Forge</button>
+          <button class="nav-item" data-view="outputs"><span>04</span>Outputs</button>
+          <button class="nav-item" data-view="publisher"><span>05</span>Publisher</button>
+        </nav>
+        <div class="sidebar-footer">
+          <div class="local-status"><i></i><span>Local mode</span><b id="health-label">checking</b></div>
+          <p>Media stays on this machine until you choose to publish.</p>
+        </div>
+      </aside>
+
+      <main class="main-content">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">SHORT-FORM OPERATIONS</span>
+            <h1 id="page-title">Overview</h1>
+          </div>
+          <div class="topbar-actions">
+            <button class="button secondary" data-action="refresh">↻ Refresh</button>
+            <button class="button primary" data-action="new-project">+ New project</button>
+          </div>
+        </header>
+
+        <section class="view active" id="view-overview">
+          <div class="hero-strip">
+            <div>
+              <span class="eyebrow accent">WORKSPACE STATUS</span>
+              <h2>Turn a clip library into a publishing queue.</h2>
+              <p>Scout references, clear source files, and let Forge assemble the next cut.</p>
+            </div>
+            <div class="hero-meta"><span id="latest-job-status">No active jobs</span><b>⌁</b></div>
+          </div>
+          <div class="metric-grid" id="metric-grid"></div>
+          <div class="split-grid">
+            <div class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">RECENT WORK</span><h3>Projects</h3></div><button class="text-button" data-view-target="forge">View all →</button></div>
+              <div id="recent-projects" class="project-list"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-heading"><div><span class="eyebrow">ACTIVITY</span><h3>Job monitor</h3></div></div>
+              <div id="job-list" class="job-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-scout">
+          <div class="section-heading"><div><span class="eyebrow accent">PART 01 / DISCOVERY</span><h2>Scout</h2><p>Collect references and import cleared source media into the library.</p></div><div class="filter-tabs" id="asset-filters"><button class="filter-tab active" data-filter="all">All</button><button class="filter-tab" data-filter="ready">Production ready</button><button class="filter-tab" data-filter="references">References</button><button class="filter-tab" data-filter="review">Needs review</button></div></div>
+          <div class="scout-grid">
+            <form class="panel form-panel" id="upload-form">
+              <div class="panel-heading"><div><span class="eyebrow">LOCAL INGEST</span><h3>Import video</h3></div><span class="panel-icon">↥</span></div>
+              <label class="drop-zone" for="video-file"><input id="video-file" name="file" type="file" accept="video/*" required /><span class="drop-icon">+</span><strong id="file-label">Choose a video</strong><small>MP4, MOV, WebM, or MKV</small></label>
+              <label>Title<input name="title" placeholder="e.g. Cat discovers the vacuum" /></label>
+              <div class="form-row"><label>Tags<input name="tags" placeholder="cat, fail, surprise" /></label><label>Rights<select name="rights_status"><option value="pending_review">Needs review</option><option value="owned_distribution">Owned</option><option value="licensed_distribution">Licensed</option></select></label></div>
+              <button class="button primary full" type="submit">↥ Import to library</button>
+              <p class="form-note">Only files you own or are cleared to use should enter production.</p>
+            </form>
+            <form class="panel form-panel" id="reference-form">
+              <div class="panel-heading"><div><span class="eyebrow">PRIVATE SCOUT</span><h3>Save a reference</h3></div><span class="panel-icon">↗</span></div>
+              <label>Source URL<input name="source_url" type="url" placeholder="https://..." required /></label>
+              <div class="form-row"><label>Title<input name="title" placeholder="What is this?" /></label><label>Platform<select name="platform"><option>YouTube</option><option>TikTok</option><option>Instagram</option><option>Reddit</option><option>Other</option></select></label></div>
+              <label>Tags<input name="tags" placeholder="cute, reaction, timing" /></label>
+              <button class="button secondary full" type="submit">+ Add to Scout</button>
+              <p class="form-note">References stay separate from the production library.</p>
+            </form>
+          </div>
+          <div class="panel library-panel"><div class="panel-heading"><div><span class="eyebrow">LIBRARY</span><h3>Source board</h3></div><span class="count-label" id="asset-count">0 assets</span></div><div id="asset-grid" class="asset-grid"></div></div>
+        </section>
+
+        <section class="view" id="view-forge">
+          <div class="section-heading"><div><span class="eyebrow accent">PART 02 / PRODUCTION</span><h2>Forge</h2><p>Build a themed cut from production-ready media, then render platform exports.</p></div><button class="button primary" data-action="new-project">+ New project</button></div>
+          <div class="forge-layout">
+            <div class="panel form-panel project-form-wrap"><form id="project-form"><div class="panel-heading"><div><span class="eyebrow">PROJECT BRIEF</span><h3>New edit</h3></div><span class="panel-icon">✦</span></div><label>Project name<input name="name" placeholder="Funniest cat fails" required /></label><label>Theme<input name="theme" placeholder="cats, surprise, funny" required /></label><div class="form-row"><label>Target seconds<input name="duration_target" type="number" min="8" max="180" value="35" /></label><label>Style<select name="style"><option value="kinetic">Kinetic</option><option value="clean">Clean captions</option><option value="narrated">Narrated</option></select></label></div><label>On-screen title<input name="title" placeholder="Cats vs. physics" /></label><label>Caption / subtitle<textarea name="caption" rows="3" placeholder="The confidence. The instant regret."></textarea></label><button class="button primary full" type="submit">Create project</button></form></div>
+            <div class="panel"><div class="panel-heading"><div><span class="eyebrow">EDIT QUEUE</span><h3>Projects</h3></div><span class="count-label" id="project-count">0 projects</span></div><div id="project-list" class="project-list forge-project-list"></div></div>
+          </div>
+          <div class="panel project-inspector" id="project-inspector"><div class="empty-state"><span>✦</span><strong>Select a project</strong><p>Plan clips, inspect the edit manifest, and render exports here.</p></div></div>
+        </section>
+
+        <section class="view" id="view-outputs">
+          <div class="section-heading"><div><span class="eyebrow accent">RENDERED MEDIA</span><h2>Outputs</h2><p>Finished files are grouped by project and ready for review.</p></div></div>
+          <div id="output-list" class="output-list"></div>
+        </section>
+
+        <section class="view" id="view-publisher">
+          <div class="section-heading"><div><span class="eyebrow accent">DISTRIBUTION</span><h2>Publisher</h2><p>Prepare platform packages, connect accounts later, and keep a clean upload history.</p></div></div>
+          <div class="publisher-grid"><form class="panel form-panel" id="account-form"><div class="panel-heading"><div><span class="eyebrow">ACCOUNTS</span><h3>Add channel</h3></div><span class="panel-icon">◎</span></div><label>Platform<select name="platform"><option value="youtube">YouTube Shorts</option><option value="tiktok">TikTok</option><option value="instagram">Instagram Reels</option></select></label><label>Label<input name="label" placeholder="Main channel" required /></label><button class="button secondary full" type="submit">+ Add account</button><p class="form-note">Credentials are added through platform OAuth integrations in a later connection step.</p></form><div class="panel"><div class="panel-heading"><div><span class="eyebrow">CONNECTED LATER</span><h3>Channels</h3></div></div><div id="account-list" class="account-list"></div></div></div>
+          <div class="panel"><div class="panel-heading"><div><span class="eyebrow">OUTBOX</span><h3>Publish queue</h3></div><span class="count-label" id="publish-count">0 queued</span></div><div id="publish-list" class="publish-list"></div></div>
+        </section>
+      </main>
+    </div>
+    <div class="toast-stack" id="toast-stack" aria-live="polite"></div>
+    <script src="/app.js" defer></script>
+  </body>
+</html>
