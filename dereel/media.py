@@ -239,3 +239,21 @@ def mix_audio_bed(source: Path, audio: Path, destination: Path, volume: float = 
     result = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "FFmpeg could not mix the audio bed")
+
+
+def write_caption_track(destination: Path, text: str, duration: float) -> bool:
+    cleaned = " ".join(line.strip() for line in text.splitlines() if line.strip())[:500]
+    if not cleaned:
+        destination.write_text("")
+        return False
+    end = max(0.1, float(duration))
+    whole_seconds = int(end)
+    milliseconds = int(round((end - whole_seconds) * 1000))
+    if milliseconds >= 1000:
+        whole_seconds += 1
+        milliseconds = 0
+    hours, remainder = divmod(whole_seconds, 3600)
+    minutes, seconds = divmod(remainder, 60)
+    timestamp = f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+    destination.write_text(f"1\n00:00:00,000 --> {timestamp}\n{cleaned}\n")
+    return True

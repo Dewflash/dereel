@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import add_text_overlay, concat_segments, mix_audio_bed, normalize_segment, sha256_file, validate_audio, validate_video
+from .media import add_text_overlay, concat_segments, mix_audio_bed, normalize_segment, sha256_file, validate_audio, validate_video, write_caption_track
 
 
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
@@ -349,6 +349,9 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             manifest["outputs"][platform] = str(destination)
         manifest["outputs"]["master"] = str(titled)
         manifest["overlay_applied"] = overlay_applied
+        caption_path = output_dir / "captions.srt"
+        caption_written = write_caption_track(caption_path, project["caption"], sum(item["duration"] for item in manifest["inputs"]))
+        manifest["captions"] = {"path": str(caption_path), "written": caption_written, "mode": "static_project_caption" if caption_written else "none"}
         manifest_path = output_dir / "render-manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
         credit_assets = [item["asset_id"] for item in enabled]

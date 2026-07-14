@@ -83,7 +83,7 @@ class CoreModelTests(unittest.TestCase):
             metadata = validate_video(source)
             metadata["fingerprint"] = sha256_file(source)
             asset = create_asset(db, kind="media", title="Sample", tags=["sample"], local_path=str(source), rights_status="owned_distribution", metadata=metadata)
-            project = create_project(db, {"name": "Render check", "theme": "sample", "duration_target": 8})
+            project = create_project(db, {"name": "Render check", "theme": "sample", "duration_target": 8, "caption": "Sample caption"})
             with db.connection() as connection:
                 connection.execute("INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 1.5, 1, 'test')", (project["id"], asset["id"]))
             result = render_project(db, project["id"], root / "outputs", lambda _progress, _message: None)
@@ -91,6 +91,9 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
             self.assertEqual(result["manifest"]["outputs"]["master"], str(output))
+            captions = Path(result["output_dir"]) / "captions.srt"
+            self.assertTrue(captions.is_file())
+            self.assertIn("1\n00:00:00,000", captions.read_text())
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_mixes_a_cleared_audio_bed(self) -> None:
