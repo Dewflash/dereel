@@ -12,7 +12,7 @@ from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
 from dereel.scout import _host_allowed
-from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation
+from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_tiktok_draft
 
 
@@ -90,6 +90,18 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in due_automations(db)], [automation["id"]])
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
+
+    def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            with self.assertRaisesRegex(ValueError, "search query"):
+                create_automation(db, {"name": "Missing query", "source_mode": "provider", "provider": "pexels"})
+            automation = create_automation(db, {"name": "Provider batch", "source_mode": "provider", "provider": "pexels", "search_query": "funny cats"})
+            with patch("dereel.automation.search_provider", return_value=[{"provider": "pexels", "provider_id": "1", "download_url": "https://videos.pexels.com/clip.mp4", "source_url": "https://pexels.com/video/1", "title": "Provider clip"}]), patch("dereel.automation.import_provider_asset", return_value={"id": "asset_1", "rights_status": "pending_review"}) as importer:
+                result = scan_provider_sources(db, automation, Path(directory) / "library")
+            self.assertEqual(len(result["imported"]), 1)
+            self.assertEqual(result["imported"][0]["rights_status"], "pending_review")
+            self.assertEqual(importer.call_args.kwargs["automation_id"], automation["id"])
 
     def test_project_defaults_to_vertical_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

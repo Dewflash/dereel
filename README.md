@@ -48,7 +48,7 @@ Instagram's public base URL must serve the local app's output route, for example
 
 ## Automations
 
-Create a recipe in the Automations view with an existing watch folder. Each run copies only new video files into `data/library/originals/`, records the recipe ID and source path, and rejects duplicate fingerprints. Set the rights default to `Needs review` for a review-first flow, or explicitly choose `Owned folder` / `Licensed folder` when the folder is already cleared. A pending batch is planned but not rendered; after approval, running the recipe again resumes that batch rather than creating another project.
+Create a recipe in the Automations view as a watch-folder, provider-search, or combined source. Provider recipes use the configured Pexels/Pixabay API keys and import only approved provider-host media. Each run copies only new video files into `data/library/originals/`, records the recipe ID and source path, and rejects duplicate fingerprints. Set the rights default to `Needs review` for a review-first flow, or explicitly choose `Owned folder` / `Licensed folder` when the folder is already cleared. A pending batch is planned but not rendered; after approval, running the recipe again resumes that batch rather than creating another project.
 
 An interval of `0` means manual runs only. A positive interval enables the local scheduler. Destination selection creates approval-ready outbox jobs after rendering; a publish delay schedules them for the local publisher worker.
 

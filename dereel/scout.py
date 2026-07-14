@@ -115,7 +115,7 @@ def _host_allowed(provider: str, url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname in PROVIDER_HOSTS.get(provider, set())
 
 
-def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str, Any]) -> dict[str, Any]:
+def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str, Any], automation_id: str = "") -> dict[str, Any]:
     provider = str(payload.get("provider") or "")
     download_url = str(payload.get("download_url") or "")
     if not _host_allowed(provider, download_url):
@@ -151,6 +151,7 @@ def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str
             tags=list(payload.get("tags") or []),
             rights_status="pending_review",
             metadata=metadata,
+            automation_id=automation_id,
         )
     except Exception:
         if destination:

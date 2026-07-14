@@ -10,10 +10,13 @@ from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import VIDEO_EXTENSIONS, safe_extension, sha256_file, validate_video
 from .pipeline import PRODUCTION_RIGHTS, create_asset, create_project, plan_project, render_project
 from .publisher import create_publish_jobs
+from .scout import import_provider_asset, search as search_provider
 
 
 AUTOMATION_RIGHTS = {"pending_review", "owned_distribution", "licensed_distribution"}
 AUTOMATION_PLATFORMS = {"youtube", "instagram", "tiktok"}
+AUTOMATION_SOURCE_MODES = {"watch", "provider", "watch_provider"}
+AUTOMATION_PROVIDERS = {"pexels", "pixabay"}
 MAX_WATCH_BYTES = 800 * 1024 * 1024
 
 
@@ -71,17 +74,32 @@ def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str
     current = current or {}
     watch_dir_value = payload.get("watch_dir", current.get("watch_dir", ""))
     watch_dir = str(watch_dir_value or "").strip()
-    if not watch_dir:
-        raise ValueError("Automation watch folder is required")
     default_rights = str(payload.get("default_rights", current.get("default_rights", "pending_review")) or "pending_review")
     if default_rights not in AUTOMATION_RIGHTS:
         raise ValueError("Unsupported automation rights mode")
+    source_mode = str(payload.get("source_mode", current.get("source_mode", "watch")) or "watch").strip().lower()
+    if source_mode not in AUTOMATION_SOURCE_MODES:
+        raise ValueError("Unsupported automation source mode")
+    provider = str(payload.get("provider", current.get("provider", "")) or "").strip().lower()
+    search_query = str(payload.get("search_query", current.get("search_query", "")) or "").strip()[:100]
+    if source_mode in {"provider", "watch_provider"}:
+        if provider not in AUTOMATION_PROVIDERS:
+            raise ValueError("A supported provider is required for this source mode")
+        if not search_query:
+            raise ValueError("A provider search query is required")
+    if source_mode in {"watch", "watch_provider"} and not str(watch_dir_value or "").strip():
+        raise ValueError("A watch folder is required for this source mode")
+    provider_limit = _as_int(payload.get("provider_limit", current.get("provider_limit", 12)), 12, 1, 24)
     platforms = _platforms(payload.get("platforms", current.get("platforms", [])))
     music_asset_id = str(payload.get("music_asset_id", current.get("music_asset_id", "")) or "").strip()
     _validate_music(db, music_asset_id)
     return {
         "name": str(payload.get("name", current.get("name", "Untitled automation")) or "Untitled automation").strip()[:120],
-        "watch_dir": str(Path(watch_dir).expanduser().resolve()),
+        "watch_dir": str(Path(watch_dir).expanduser().resolve()) if watch_dir else "",
+        "source_mode": source_mode,
+        "provider": provider,
+        "search_query": search_query,
+        "provider_limit": provider_limit,
         "theme": str(payload.get("theme", current.get("theme", "funny moments")) or "funny moments").strip()[:180],
         "duration_target": max(8, min(float(payload.get("duration_target", current.get("duration_target", 35)) or 35), 180)),
         "style": str(payload.get("style", current.get("style", "kinetic")) or "kinetic").strip()[:40],
@@ -240,6 +258,46 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
     return {"found": len(files), "imported": imported, "duplicates": duplicates, "errors": errors}
 
 
+def scan_provider_sources(db: Database, automation: dict[str, Any], originals_dir: Path) -> dict[str, Any]:
+    results = search_provider(automation["provider"], automation["search_query"], per_page=automation["provider_limit"])
+    imported: list[dict[str, Any]] = []
+    duplicates: list[str] = []
+    errors: list[dict[str, str]] = []
+    for result in results:
+        try:
+            imported.append(
+                import_provider_asset(
+                    db,
+                    originals_dir,
+                    {
+                        "provider": result["provider"],
+                        "download_url": result["download_url"],
+                        "source_url": result.get("source_url", ""),
+                        "title": result.get("title", "Provider import"),
+                        "tags": automation["tags"],
+                    },
+                    automation_id=automation["id"],
+                )
+            )
+        except ValueError as error:
+            if "matches existing asset" in str(error):
+                duplicates.append(str(result.get("title") or result.get("provider_id") or "provider result"))
+            else:
+                errors.append({"file": str(result.get("title") or "provider result"), "error": str(error)[:300]})
+        except Exception as error:
+            errors.append({"file": str(result.get("title") or "provider result"), "error": str(error)[:300]})
+    return {"found": len(results), "imported": imported, "duplicates": duplicates, "errors": errors}
+
+
+def _merge_reports(reports: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "found": sum(int(report.get("found") or 0) for report in reports),
+        "imported": [asset for report in reports for asset in report.get("imported", [])],
+        "duplicates": [item for report in reports for item in report.get("duplicates", [])],
+        "errors": [item for report in reports for item in report.get("errors", [])],
+    }
+
+
 def _template(value: str, automation: dict[str, Any], run_date: str) -> str:
     return (value or "").replace("{name}", automation["name"]).replace("{theme}", automation["theme"]).replace("{date}", run_date)
 
@@ -261,7 +319,12 @@ def run_automation(
     if not automation_row:
         raise KeyError("Automation not found")
     automation = automation_view(automation_row)
-    report = scan_watch_folder(db, automation, originals_dir)
+    reports: list[dict[str, Any]] = []
+    if automation["source_mode"] in {"watch", "watch_provider"}:
+        reports.append(scan_watch_folder(db, automation, originals_dir))
+    if automation["source_mode"] in {"provider", "watch_provider"}:
+        reports.append(scan_provider_sources(db, automation, originals_dir))
+    report = _merge_reports(reports)
     if progress:
         progress(0.24, f"Imported {len(report['imported'])} new source{'' if len(report['imported']) == 1 else 's'}")
     asset_ids = _automation_asset_ids(db, automation_id)

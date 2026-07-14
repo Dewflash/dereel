@@ -96,7 +96,9 @@
             <form class="panel form-panel" id="automation-form">
               <div class="panel-heading"><div><span class="eyebrow" id="automation-form-eyebrow">AUTOMATION RECIPE</span><h3 id="automation-form-title">New recipe</h3></div><span class="panel-icon">↻</span></div>
               <label>Name<input name="name" placeholder="Funny cat batch" required /></label>
-              <label>Watch folder<input name="watch_dir" placeholder="/Users/you/Movies/cat-inbox" required /></label>
+              <label>Source mode<select name="source_mode" id="automation-source-mode"><option value="watch">Watch folder</option><option value="provider">Provider search</option><option value="watch_provider">Watch folder + provider</option></select></label>
+              <div id="automation-watch-config"><label>Watch folder<input name="watch_dir" placeholder="/Users/you/Movies/cat-inbox" /></label></div>
+              <div id="automation-provider-config" hidden><div class="form-row"><label>Provider<select name="provider"><option value="pexels">Pexels</option><option value="pixabay">Pixabay</option></select></label><label>Result limit<input name="provider_limit" type="number" min="1" max="24" value="12" /></label></div><label>Search query<input name="search_query" placeholder="funny cats, cute dogs, football training" /></label></div>
               <label>Theme<input name="theme" placeholder="cats, funny, surprise" required /></label>
               <div class="form-row"><label>Target seconds<input name="duration_target" type="number" min="8" max="180" value="35" /></label><label>Style<select name="style"><option value="kinetic">Kinetic</option><option value="clean">Clean captions</option><option value="narrated">Narrated</option></select></label></div>
               <div class="form-row"><label>Scan interval minutes<input name="interval_minutes" type="number" min="0" max="10080" value="0" /></label><label>Publish delay minutes<input name="publish_delay_minutes" type="number" min="0" max="43200" value="0" /></label></div>

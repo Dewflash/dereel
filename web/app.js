@@ -171,8 +171,9 @@ function renderAutomations() {
     const running = ["queued", "running"].includes(automation.status);
     const toggleLabel = automation.enabled ? "Pause" : "Enable";
     const lastRun = automation.last_run_at ? `last ${escapeHtml(automation.last_run_at.replace("T", " "))}` : "never run";
-    const detail = `${formatInterval(automation.interval_minutes)} · ${automation.default_rights.replaceAll("_", " ")} · ${lastRun}`;
-    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(automation.name)}</strong><small>${escapeHtml(automation.watch_dir)} · ${escapeHtml(detail)}${automation.last_error ? ` · ${escapeHtml(automation.last_error)}` : ""}</small></div>${statusPill(automation.status)}<button class="row-action" data-edit-automation="${automation.id}">Edit</button><button class="row-action" data-run-automation="${automation.id}" ${running ? "disabled" : ""}>Run</button><button class="row-action" data-toggle-automation="${automation.id}">${toggleLabel}</button><button class="row-action danger-action" data-delete-automation="${automation.id}">Delete</button></div>`;
+    const source = automation.source_mode === "provider" ? `${automation.provider}: ${automation.search_query}` : automation.source_mode === "watch_provider" ? `${automation.watch_dir} + ${automation.provider}` : automation.watch_dir;
+    const detail = `${automation.source_mode.replaceAll("_", " + ")} · ${formatInterval(automation.interval_minutes)} · ${automation.default_rights.replaceAll("_", " ")} · ${lastRun}`;
+    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(automation.name)}</strong><small>${escapeHtml(source)} · ${escapeHtml(detail)}${automation.last_error ? ` · ${escapeHtml(automation.last_error)}` : ""}</small></div>${statusPill(automation.status)}<button class="row-action" data-edit-automation="${automation.id}">Edit</button><button class="row-action" data-run-automation="${automation.id}" ${running ? "disabled" : ""}>Run</button><button class="row-action" data-toggle-automation="${automation.id}">${toggleLabel}</button><button class="row-action danger-action" data-delete-automation="${automation.id}">Delete</button></div>`;
   }).join("") : empty("No automations yet", "Create a recipe to watch a local folder and build repeatable releases.");
 }
 
@@ -199,7 +200,20 @@ function resetAutomationForm() {
   $("#automation-form-title").textContent = "New recipe";
   $("#automation-submit").textContent = "Create automation";
   $("#automation-cancel").hidden = true;
+  updateAutomationSourceFields();
   renderAudioSelect();
+}
+
+function updateAutomationSourceFields() {
+  const mode = $("#automation-source-mode")?.value || "watch";
+  const watch = $("#automation-watch-config");
+  const provider = $("#automation-provider-config");
+  const watchInput = $("input[name=watch_dir]");
+  const queryInput = $("input[name=search_query]");
+  if (watch) watch.hidden = mode === "provider";
+  if (provider) provider.hidden = mode === "watch";
+  if (watchInput) watchInput.required = mode !== "provider";
+  if (queryInput) queryInput.required = mode !== "watch";
 }
 
 function editAutomation(automationId) {
@@ -209,6 +223,10 @@ function editAutomation(automationId) {
   state.editingAutomationId = automation.id;
   $("input[name=name]", form).value = automation.name;
   $("input[name=watch_dir]", form).value = automation.watch_dir;
+  $("select[name=source_mode]", form).value = automation.source_mode || "watch";
+  $("select[name=provider]", form).value = automation.provider || "pexels";
+  $("input[name=provider_limit]", form).value = automation.provider_limit || 12;
+  $("input[name=search_query]", form).value = automation.search_query || "";
   $("input[name=theme]", form).value = automation.theme;
   $("input[name=duration_target]", form).value = automation.duration_target;
   $("select[name=style]", form).value = automation.style;
@@ -226,6 +244,7 @@ function editAutomation(automationId) {
   $("#automation-form-title").textContent = automation.name;
   $("#automation-submit").textContent = "Save automation";
   $("#automation-cancel").hidden = false;
+  updateAutomationSourceFields();
   showView("automations");
 }
 
@@ -326,6 +345,7 @@ $("#upload-form").addEventListener("submit", (event) => { event.preventDefault()
 $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
 $("#automation-form").addEventListener("submit", (event) => { event.preventDefault(); submitAutomation(event.currentTarget); });
+$("#automation-source-mode").addEventListener("change", updateAutomationSourceFields);
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
 $("#publish-form").addEventListener("submit", (event) => { event.preventDefault(); submitPublish(event.currentTarget).catch((error) => toast(error.message, true)); });
 $("#account-form").addEventListener("submit", (event) => { event.preventDefault(); submitAccount(event.currentTarget); });
@@ -336,6 +356,7 @@ $("#asset-filters").addEventListener("click", async (event) => { const button = 
 
 const initialView = location.hash.replace("#", "") || "overview";
 updateAccountFields();
+updateAutomationSourceFields();
 showView(["overview", "scout", "automations", "forge", "outputs", "publisher"].includes(initialView) ? initialView : "overview");
 refresh().catch((error) => { toast(error.message, true); $("#health-label").textContent = "offline"; });
 setInterval(() => refresh().catch(() => {}), 2500);

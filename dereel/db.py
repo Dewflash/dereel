@@ -122,6 +122,10 @@ class Database:
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
                     watch_dir TEXT NOT NULL,
+                    source_mode TEXT NOT NULL DEFAULT 'watch',
+                    provider TEXT NOT NULL DEFAULT '',
+                    search_query TEXT NOT NULL DEFAULT '',
+                    provider_limit INTEGER NOT NULL DEFAULT 12,
                     theme TEXT NOT NULL,
                     duration_target REAL NOT NULL DEFAULT 35,
                     style TEXT NOT NULL DEFAULT 'kinetic',
@@ -198,6 +202,16 @@ class Database:
             if "automation_id" not in asset_columns:
                 connection.execute("ALTER TABLE assets ADD COLUMN automation_id TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_assets_automation ON assets(automation_id)")
+            automation_columns = {row[1] for row in connection.execute("PRAGMA table_info(automations)").fetchall()}
+            automation_migrations = {
+                "source_mode": "TEXT NOT NULL DEFAULT 'watch'",
+                "provider": "TEXT NOT NULL DEFAULT ''",
+                "search_query": "TEXT NOT NULL DEFAULT ''",
+                "provider_limit": "INTEGER NOT NULL DEFAULT 12",
+            }
+            for column, definition in automation_migrations.items():
+                if column not in automation_columns:
+                    connection.execute(f"ALTER TABLE automations ADD COLUMN {column} {definition}")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:
