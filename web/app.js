@@ -16,7 +16,7 @@ const formatBytes = (bytes) => {
   return `${size.toFixed(size >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 };
 const statusClass = (value = "") => value.toLowerCase().replace(/[^a-z]+/g, "-");
-const statusPill = (value) => `<span class="status-pill ${statusClass(value)}">${escapeHtml(String(value).replaceAll("_", " "))}</span>`;
+const statusPill = (value) => `<span class="status-pill ${statusClass(value)}">${escapeHtml(value === "drafted" ? "draft handoff" : String(value).replaceAll("_", " "))}</span>`;
 
 async function api(path, options = {}) {
   const response = await fetch(path, { headers: { ...(options.body instanceof FormData ? {} : { "Content-Type": "application/json" }), ...(options.headers || {}) }, ...options });
@@ -282,7 +282,8 @@ function renderPublisher() {
     const editable = !processing && ["ready", "failed"].includes(job.status);
     const scheduleButton = editable ? `<button class="row-action" data-edit-schedule="${job.id}">Schedule</button>` : "";
     const cancelButton = editable ? `<button class="row-action danger-action" data-cancel-publish="${job.id}">Cancel</button>` : "";
-    const action = processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : "";
+    const markPosted = ["ready", "drafted"].includes(job.status) ? `<button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : "";
+    const action = processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button>${markPosted}` : job.status === "drafted" ? markPosted : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : "";
     const scheduleEditor = state.publishScheduleJobId === job.id && editable ? `<div class="publish-schedule"><input class="publish-schedule-input" type="datetime-local" value="${escapeHtml(toDatetimeLocal(job.scheduled_for))}" /><button class="row-action" data-save-schedule="${job.id}">Save</button><button class="row-action" data-cancel-schedule="${job.id}">Close</button></div>` : "";
     return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${scheduleButton}${cancelButton}${action}</div>${scheduleEditor}${history}</div>`;
   }).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");

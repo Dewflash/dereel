@@ -227,7 +227,7 @@ class Database:
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                     account_id TEXT REFERENCES publishing_accounts(id) ON DELETE SET NULL,
                     platform TEXT NOT NULL,
-                    status TEXT NOT NULL CHECK(status IN ('queued', 'ready', 'published', 'failed')),
+                    status TEXT NOT NULL CHECK(status IN ('queued', 'ready', 'drafted', 'published', 'failed')),
                     scheduled_for TEXT,
                     remote_id TEXT,
                     error TEXT,
@@ -244,7 +244,7 @@ class Database:
                     publish_job_id TEXT NOT NULL REFERENCES publish_jobs(id) ON DELETE CASCADE,
                     attempt_number INTEGER NOT NULL,
                     trigger TEXT NOT NULL CHECK(trigger IN ('manual', 'scheduler')),
-                    status TEXT NOT NULL CHECK(status IN ('running', 'published', 'failed')),
+                    status TEXT NOT NULL CHECK(status IN ('running', 'drafted', 'published', 'failed')),
                     remote_id TEXT NOT NULL DEFAULT '',
                     error TEXT NOT NULL DEFAULT '',
                     started_at TEXT NOT NULL,
@@ -255,7 +255,7 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC);
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '10');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '11');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -296,9 +296,71 @@ class Database:
                 connection.execute("ALTER TABLE publish_jobs ADD COLUMN claimed_at TEXT")
             if "cancelled_at" not in publish_columns:
                 connection.execute("ALTER TABLE publish_jobs ADD COLUMN cancelled_at TEXT")
+            publish_schema = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publish_jobs'").fetchone()
+            if publish_schema and "'drafted'" not in str(publish_schema[0]):
+                # SQLite cannot alter a CHECK constraint in place; rebuild both related tables together.
+                connection.execute("PRAGMA foreign_keys = OFF")
+                try:
+                    connection.execute("ALTER TABLE publish_attempts RENAME TO publish_attempts_legacy")
+                    connection.execute("ALTER TABLE publish_jobs RENAME TO publish_jobs_legacy")
+                    connection.execute(
+                        """
+                        CREATE TABLE publish_jobs (
+                            id TEXT PRIMARY KEY,
+                            project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                            account_id TEXT REFERENCES publishing_accounts(id) ON DELETE SET NULL,
+                            platform TEXT NOT NULL,
+                            status TEXT NOT NULL CHECK(status IN ('queued', 'ready', 'drafted', 'published', 'failed')),
+                            scheduled_for TEXT,
+                            remote_id TEXT,
+                            error TEXT,
+                            claim_token TEXT,
+                            claimed_at TEXT,
+                            cancelled_at TEXT,
+                            payload_json TEXT NOT NULL DEFAULT '{}',
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO publish_jobs(id, project_id, account_id, platform, status, scheduled_for, remote_id, error, claim_token, claimed_at, cancelled_at, payload_json, created_at, updated_at)
+                        SELECT id, project_id, account_id, platform, status, scheduled_for, remote_id, error, claim_token, claimed_at, cancelled_at, payload_json, created_at, updated_at
+                        FROM publish_jobs_legacy
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE publish_attempts (
+                            id TEXT PRIMARY KEY,
+                            publish_job_id TEXT NOT NULL REFERENCES publish_jobs(id) ON DELETE CASCADE,
+                            attempt_number INTEGER NOT NULL,
+                            trigger TEXT NOT NULL CHECK(trigger IN ('manual', 'scheduler')),
+                            status TEXT NOT NULL CHECK(status IN ('running', 'drafted', 'published', 'failed')),
+                            remote_id TEXT NOT NULL DEFAULT '',
+                            error TEXT NOT NULL DEFAULT '',
+                            started_at TEXT NOT NULL,
+                            finished_at TEXT,
+                            updated_at TEXT NOT NULL,
+                            UNIQUE(publish_job_id, attempt_number)
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        INSERT INTO publish_attempts(id, publish_job_id, attempt_number, trigger, status, remote_id, error, started_at, finished_at, updated_at)
+                        SELECT id, publish_job_id, attempt_number, trigger, status, remote_id, error, started_at, finished_at, updated_at
+                        FROM publish_attempts_legacy
+                        """
+                    )
+                    connection.execute("DROP TABLE publish_attempts_legacy")
+                    connection.execute("DROP TABLE publish_jobs_legacy")
+                finally:
+                    connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_claim ON publish_jobs(claim_token)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '10')")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '11')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

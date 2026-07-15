@@ -16,7 +16,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
-from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
+from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
 from dereel.server import AppState, Handler, close_multipart_files, finalize_publish_success, parse_multipart, parse_multipart_stream, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
@@ -137,6 +137,8 @@ class CoreModelTests(unittest.TestCase):
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
                 publish_columns = {row[1] for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()}
                 attempt_columns = {row[1] for row in connection.execute("PRAGMA table_info(publish_attempts)").fetchall()}
+                publish_schema = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publish_jobs'").fetchone()[0]
+                attempt_schema = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publish_attempts'").fetchone()[0]
                 review_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_reviews)").fetchall()}
                 schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
             self.assertIn("automation_id", columns)
@@ -144,10 +146,72 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("claim_token", publish_columns)
             self.assertIn("claimed_at", publish_columns)
-            self.assertEqual(schema_version, "10")
+            self.assertIn("'drafted'", publish_schema)
+            self.assertIn("'drafted'", attempt_schema)
+            self.assertEqual(schema_version, "11")
             self.assertIn("attempt_number", attempt_columns)
             self.assertIn("cancelled_at", publish_columns)
             self.assertIn("previous_rights_status", review_columns)
+
+    def test_database_migrates_legacy_publish_status_constraints(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "legacy-publish.sqlite3"
+            connection = sqlite3.connect(database_path)
+            connection.executescript(
+                """
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO schema_meta(key, value) VALUES ('schema_version', '10');
+                CREATE TABLE projects (id TEXT PRIMARY KEY);
+                INSERT INTO projects(id) VALUES ('project_legacy');
+                CREATE TABLE publishing_accounts (id TEXT PRIMARY KEY);
+                CREATE TABLE publish_jobs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    account_id TEXT,
+                    platform TEXT NOT NULL,
+                    status TEXT NOT NULL CHECK(status IN ('queued', 'ready', 'published', 'failed')),
+                    scheduled_for TEXT,
+                    remote_id TEXT,
+                    error TEXT,
+                    claim_token TEXT,
+                    claimed_at TEXT,
+                    cancelled_at TEXT,
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                CREATE TABLE publish_attempts (
+                    id TEXT PRIMARY KEY,
+                    publish_job_id TEXT NOT NULL,
+                    attempt_number INTEGER NOT NULL,
+                    trigger TEXT NOT NULL CHECK(trigger IN ('manual', 'scheduler')),
+                    status TEXT NOT NULL CHECK(status IN ('running', 'published', 'failed')),
+                    remote_id TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(publish_job_id, attempt_number)
+                );
+                INSERT INTO publish_jobs(id, project_id, platform, status, payload_json, created_at, updated_at) VALUES ('legacy_job', 'project_legacy', 'tiktok', 'published', '{}', '2026-01-01', '2026-01-01');
+                INSERT INTO publish_attempts(id, publish_job_id, attempt_number, trigger, status, started_at, updated_at) VALUES ('legacy_attempt', 'legacy_job', 1, 'manual', 'published', '2026-01-01', '2026-01-01');
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            db = Database(database_path)
+            with db.connection() as migrated:
+                migrated.execute(
+                    "INSERT INTO publish_jobs(id, project_id, platform, status, payload_json, created_at, updated_at) VALUES (?, ?, ?, ?, '{}', ?, ?)",
+                    ("draft_job", "project_legacy", "tiktok", "drafted", "2026-01-02", "2026-01-02"),
+                )
+                migrated.execute(
+                    "INSERT INTO publish_attempts(id, publish_job_id, attempt_number, trigger, status, started_at, updated_at) VALUES (?, ?, 1, 'manual', 'drafted', ?, ?)",
+                    ("draft_attempt", "draft_job", "2026-01-02", "2026-01-02"),
+                )
+                self.assertEqual(migrated.execute("SELECT status FROM publish_jobs WHERE id = 'legacy_job'").fetchone()[0], "published")
+                self.assertEqual(migrated.execute("SELECT status FROM publish_attempts WHERE id = 'legacy_attempt'").fetchone()[0], "published")
 
     def test_database_migrates_legacy_jobs_with_automation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -184,7 +248,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
             self.assertIn("idx_jobs_retry_of", index_names)
-            self.assertEqual(schema_version, "10")
+            self.assertEqual(schema_version, "11")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -756,6 +820,7 @@ class CoreModelTests(unittest.TestCase):
         capabilities = {item["id"]: item for item in platform_capabilities()}
         self.assertEqual(capabilities["youtube"]["mode"], "direct_upload")
         self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
+        self.assertEqual(capabilities["tiktok"]["mode"], "inbox_draft_handoff")
         self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
 
     def test_publisher_account_readiness_reports_platform_specific_blockers(self) -> None:
@@ -950,6 +1015,22 @@ class CoreModelTests(unittest.TestCase):
             job = db.get("publish_jobs", "id", job_id)
             self.assertEqual((job["status"], job["remote_id"], job["claim_token"]), ("published", "remote-finalizer", None))
             self.assertEqual(list_publish_attempts(db, job_id)[0]["status"], "published")
+
+    def test_tiktok_draft_handoff_is_distinct_until_marked_posted(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "TikTok draft", "theme": "cats"})
+            job_id = "tiktok_draft_state"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": None, "platform": "tiktok", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            self.assertTrue(claim_publish_job(db, job_id))
+            attempt = begin_publish_attempt(db, job_id, "manual")
+            self.assertEqual(publish_result_status("draft:publish_1"), "drafted")
+            finalize_publish_success(db, job_id, attempt, "draft:publish_1")
+            self.assertEqual(db.get("publish_jobs", "id", job_id)["status"], "drafted")
+            self.assertEqual(list_publish_attempts(db, job_id)[0]["status"], "drafted")
+            marked = mark_publish_job(db, job_id, "tiktok-posted")
+            self.assertEqual((marked["status"], marked["remote_id"]), ("published", "tiktok-posted"))
+            self.assertEqual([item["status"] for item in list_publish_attempts(db, job_id)], ["published", "drafted"])
 
     def test_published_jobs_cannot_be_replayed(self) -> None:
         with self.assertRaisesRegex(ValueError, "already marked published"):
@@ -1213,8 +1294,8 @@ class CoreModelTests(unittest.TestCase):
                 [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                     "-f", "lavfi", "-i", "color=c=0x31565a:s=320x568:d=1.5",
-                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1.5",
-                    "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=0.3",
+                    "-t", "1.5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
                 ],
                 check=True,
             )

@@ -28,12 +28,18 @@ PLATFORM_ENV = {
     "tiktok": "DEREEL_TIKTOK_ACCESS_TOKEN",
 }
 
+PUBLISH_COMPLETION_STATUSES = {"drafted", "published", "failed"}
+
+
+def publish_result_status(remote_id: str) -> str:
+    return "drafted" if str(remote_id or "").startswith("draft:") else "published"
+
 
 def platform_capabilities() -> list[dict[str, Any]]:
     return [
         {"id": "youtube", "label": "YouTube Shorts", "mode": "direct_upload", "token_env": PLATFORM_ENV["youtube"], "configured": bool(os.getenv(PLATFORM_ENV["youtube"]))},
         {"id": "instagram", "label": "Instagram Reels", "mode": "public_url_container", "token_env": PLATFORM_ENV["instagram"], "configured": bool(os.getenv(PLATFORM_ENV["instagram"]))},
-        {"id": "tiktok", "label": "TikTok", "mode": "direct_or_draft", "token_env": PLATFORM_ENV["tiktok"], "configured": bool(os.getenv(PLATFORM_ENV["tiktok"]))},
+        {"id": "tiktok", "label": "TikTok", "mode": "inbox_draft_handoff", "token_env": PLATFORM_ENV["tiktok"], "configured": bool(os.getenv(PLATFORM_ENV["tiktok"]))},
     ]
 
 
@@ -327,7 +333,7 @@ def complete_publish_attempt(
     remote_id: str = "",
     error: str = "",
 ) -> dict[str, Any]:
-    if status not in {"published", "failed"}:
+    if status not in PUBLISH_COMPLETION_STATUSES:
         raise ValueError("Unsupported publish completion status")
     finished = now_iso()
     with db.connection() as connection:
@@ -351,7 +357,7 @@ def complete_publish_attempt(
 
 
 def complete_publish_job(db: Database, job_id: str, status: str, remote_id: str = "", error: str = "") -> dict[str, Any]:
-    if status not in {"published", "failed"}:
+    if status not in PUBLISH_COMPLETION_STATUSES:
         raise ValueError("Unsupported publish completion status")
     with db.connection() as connection:
         result = connection.execute(
@@ -378,18 +384,20 @@ def fail_publish_attempt(db: Database, job_id: str, attempt_id: str = "", error:
     return db.get("publish_jobs", "id", job_id) or {}
 
 
-def force_publish_success(db: Database, job_id: str, attempt_id: str, remote_id: str) -> dict[str, Any]:
+def force_publish_success(db: Database, job_id: str, attempt_id: str, remote_id: str, status: str = "published") -> dict[str, Any]:
+    if status not in {"drafted", "published"}:
+        raise ValueError("Unsupported successful publish status")
     timestamp = now_iso()
     with db.connection() as connection:
         attempt_result = connection.execute(
-            "UPDATE publish_attempts SET status = 'published', remote_id = ?, error = '', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
-            (remote_id or "", timestamp, timestamp, attempt_id),
+            "UPDATE publish_attempts SET status = ?, remote_id = ?, error = '', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+            (status, remote_id or "", timestamp, timestamp, attempt_id),
         )
         if attempt_result.rowcount != 1:
             raise ValueError("Publish attempt could not be force-finalized")
         job_result = connection.execute(
-            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL AND claim_token IS NOT NULL AND claim_token != ''",
-            (remote_id or "", timestamp, job_id),
+            "UPDATE publish_jobs SET status = ?, remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL AND claim_token IS NOT NULL AND claim_token != ''",
+            (status, remote_id or "", timestamp, job_id),
         )
         if job_result.rowcount != 1:
             raise ValueError("Publish job could not be force-finalized")
@@ -401,7 +409,7 @@ def mark_publish_job(db: Database, job_id: str, remote_id: str = "manual") -> di
     remote = remote_id or "manual"
     with db.connection() as connection:
         result = connection.execute(
-            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
+            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed', 'drafted') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
             (remote, timestamp, job_id),
         )
         if result.rowcount != 1:
@@ -674,6 +682,8 @@ def publish_instagram_reel(payload: dict[str, Any], account: dict[str, Any], acc
 def publish_job(db: Database, job: dict[str, Any]) -> str:
     if job.get("status") == "published":
         raise ValueError("Publish job is already marked published")
+    if job.get("status") == "drafted":
+        raise ValueError("Publish job has already been handed off as a draft")
     if job.get("cancelled_at"):
         raise ValueError("Publish job is cancelled")
     if job.get("status") not in {"ready", "failed"}:

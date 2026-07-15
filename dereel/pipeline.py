@@ -625,7 +625,7 @@ def delete_project(db: Database, project_id: str, output_root: Path | None = Non
         if publish_job:
             raise ValueError("Project cannot be deleted while it has a pending publish job")
         publish_history = connection.execute(
-            "SELECT pj.id FROM publish_jobs pj WHERE pj.project_id = ? AND (pj.status = 'published' OR EXISTS (SELECT 1 FROM publish_attempts pa WHERE pa.publish_job_id = pj.id)) LIMIT 1",
+            "SELECT pj.id FROM publish_jobs pj WHERE pj.project_id = ? AND (pj.status IN ('drafted', 'published') OR EXISTS (SELECT 1 FROM publish_attempts pa WHERE pa.publish_job_id = pj.id)) LIMIT 1",
             (project_id,),
         ).fetchone()
         if publish_history:
