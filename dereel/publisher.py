@@ -74,9 +74,90 @@ def account_view(row: dict[str, Any]) -> dict[str, Any]:
         "instagram_user_id": config.get("instagram_user_id", ""),
         "public_media_base_url": config.get("public_media_base_url", ""),
     }
+    item["connection_check"] = config.get("connection_check", {}) if isinstance(config.get("connection_check"), dict) else {}
     item["readiness"] = readiness
     item["status"] = "connected" if readiness["token_configured"] else "not_connected"
     return item
+
+
+def _connection_request(account: dict[str, Any], token: str) -> urllib.request.Request:
+    platform = str(account.get("platform") or "")
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    if platform == "youtube":
+        query = urllib.parse.urlencode({"part": "id,snippet", "mine": "true"})
+        return urllib.request.Request(f"https://www.googleapis.com/youtube/v3/channels?{query}", headers=headers, method="GET")
+    if platform == "instagram":
+        config = json_loads(account.get("config_json"), {})
+        user_id = str(config.get("instagram_user_id") or os.getenv("DEREEL_INSTAGRAM_USER_ID") or "").strip()
+        version = os.getenv("DEREEL_INSTAGRAM_GRAPH_VERSION", "v22.0")
+        user_path = urllib.parse.quote(user_id, safe="")
+        query = urllib.parse.urlencode({"fields": "id,username"})
+        return urllib.request.Request(f"https://graph.facebook.com/{version}/{user_path}?{query}", headers=headers, method="GET")
+    if platform == "tiktok":
+        query = urllib.parse.urlencode({"fields": "open_id,display_name"})
+        return urllib.request.Request(f"https://open.tiktokapis.com/v2/user/info/?{query}", headers=headers, method="GET")
+    raise ValueError("Unsupported publishing platform")
+
+
+def _connection_payload(response: Any, platform: str) -> dict[str, Any]:
+    try:
+        payload = json.loads(response.read().decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"{platform.title()} returned invalid JSON") from error
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"{platform.title()} returned an invalid response")
+    if payload.get("error"):
+        detail = payload["error"]
+        if isinstance(detail, dict):
+            raise RuntimeError(f"{platform.title()} returned {detail.get('code', 'an error')}: {detail.get('message', '')}")
+        raise RuntimeError(f"{platform.title()} returned an error: {detail}")
+    return payload
+
+
+def _connection_identity(platform: str, payload: dict[str, Any]) -> str:
+    if platform == "youtube":
+        items = payload.get("items") or []
+        item = items[0] if items and isinstance(items[0], dict) else {}
+        snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
+        return str(snippet.get("title") or item.get("id") or "YouTube channel")
+    if platform == "instagram":
+        return str(payload.get("username") or payload.get("id") or "Instagram account")
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    return str(data.get("display_name") or data.get("open_id") or "TikTok account")
+
+
+def check_publishing_account(db: Database, account_id: str) -> dict[str, Any]:
+    account = db.get("publishing_accounts", "id", account_id)
+    if not account:
+        raise KeyError("Publishing account not found")
+    checked_at = now_iso()
+    readiness = account_readiness(account)
+    if not readiness["ready"]:
+        check = {"status": "blocked", "checked_at": checked_at, "message": "; ".join(readiness["issues"]), "identity": ""}
+    else:
+        platform = str(account.get("platform") or "")
+        token = str(os.getenv(readiness["token_env"]) or "").strip()
+        def safe_message(value: Any) -> str:
+            return str(value).replace(token, "[redacted]")[:700]
+        try:
+            request = _connection_request(account, token)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                payload = _connection_payload(response, platform)
+            identity = _connection_identity(platform, payload)
+            check = {"status": "passed", "checked_at": checked_at, "message": "Read-only account check passed", "identity": identity}
+        except urllib.error.HTTPError as error:
+            detail = error.read().decode("utf-8", "replace")[:500]
+            check = {"status": "failed", "checked_at": checked_at, "message": safe_message(f"HTTP {error.code}: {detail}"), "identity": ""}
+        except urllib.error.URLError as error:
+            check = {"status": "failed", "checked_at": checked_at, "message": safe_message(f"Network error: {error.reason}"), "identity": ""}
+        except Exception as error:
+            check = {"status": "failed", "checked_at": checked_at, "message": safe_message(error), "identity": ""}
+    config = json_loads(account.get("config_json"), {})
+    if not isinstance(config, dict):
+        config = {}
+    config["connection_check"] = check
+    db.update("publishing_accounts", "id", account_id, {"config_json": json_dumps(config), "updated_at": checked_at})
+    return account_view(db.get("publishing_accounts", "id", account_id) or account)
 
 
 def update_publishing_account(db: Database, account_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -85,6 +166,9 @@ def update_publishing_account(db: Database, account_id: str, payload: dict[str, 
         raise KeyError("Publishing account not found")
     label = str(payload.get("label", account["label"]) or account["platform"].title()).strip()[:120]
     config = json_loads(account.get("config_json"), {})
+    if not isinstance(config, dict):
+        config = {}
+    config.pop("connection_check", None)
     if account["platform"] == "instagram":
         if "instagram_user_id" in payload:
             config["instagram_user_id"] = str(payload.get("instagram_user_id") or "").strip()

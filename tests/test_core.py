@@ -16,7 +16,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
-from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
+from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
 from dereel.server import AppState, Handler, close_multipart_files, finalize_publish_success, parse_multipart, parse_multipart_stream, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
@@ -724,9 +724,10 @@ class CoreModelTests(unittest.TestCase):
             db = Database(Path(directory) / "test.sqlite3")
             account_id = "account_lifecycle"
             project = create_project(db, {"name": "Release", "theme": "cats"})
-            db.insert("publishing_accounts", {"id": account_id, "platform": "instagram", "label": "Old label", "status": "not_connected", "config_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            db.insert("publishing_accounts", {"id": account_id, "platform": "instagram", "label": "Old label", "status": "not_connected", "config_json": json.dumps({"connection_check": {"status": "passed", "identity": "stale"}}), "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
             updated_account = update_publishing_account(db, account_id, {"label": "Main Reels", "instagram_user_id": "ig_123", "public_media_base_url": "https://media.example"})
             self.assertEqual((updated_account["label"], updated_account["config"]["instagram_user_id"]), ("Main Reels", "ig_123"))
+            self.assertEqual(updated_account["connection_check"], {})
             job_id = "outbox_lifecycle"
             db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": account_id, "platform": "instagram", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
             with self.assertRaisesRegex(ValueError, "pending publish job"):
@@ -843,6 +844,67 @@ class CoreModelTests(unittest.TestCase):
         with patch.dict("os.environ", {"DEREEL_INSTAGRAM_ACCESS_TOKEN": "   "}, clear=True):
             whitespace_token = account_view(instagram)
         self.assertFalse(whitespace_token["readiness"]["token_configured"])
+
+    def test_account_connection_check_blocks_without_request_and_persists_safe_result(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            account = {"id": "account_youtube", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"}
+            db.insert("publishing_accounts", {**account, "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            with patch.dict("os.environ", {}, clear=True), patch("dereel.publisher.urllib.request.urlopen") as opener:
+                checked = check_publishing_account(db, account["id"])
+            opener.assert_not_called()
+            self.assertEqual(checked["connection_check"]["status"], "blocked")
+            self.assertIn("Set DEREEL_YOUTUBE_ACCESS_TOKEN", checked["connection_check"]["message"])
+            stored = json.loads(db.get("publishing_accounts", "id", account["id"])["config_json"])
+            self.assertNotIn("access_token", stored)
+            self.assertNotIn("secret-token", json.dumps(stored))
+
+    def test_account_connection_check_reads_youtube_identity_without_upload(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"items":[{"id":"channel_1","snippet":{"title":"Dewflash"}}]}'
+
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            account = {"id": "account_youtube", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"}
+            db.insert("publishing_accounts", {**account, "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            with patch.dict("os.environ", {"DEREEL_YOUTUBE_ACCESS_TOKEN": "secret-token"}, clear=True), patch("dereel.publisher.urllib.request.urlopen", return_value=FakeResponse()) as opener:
+                checked = check_publishing_account(db, account["id"])
+            request = opener.call_args.args[0]
+            self.assertEqual(request.full_url, "https://www.googleapis.com/youtube/v3/channels?part=id%2Csnippet&mine=true")
+            self.assertEqual(request.get_header("Authorization"), "Bearer secret-token")
+            self.assertEqual((checked["connection_check"]["status"], checked["connection_check"]["identity"]), ("passed", "Dewflash"))
+
+    def test_account_connection_check_uses_instagram_and_tiktok_identity_requests(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: bytes) -> None:
+                self.body = body
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return self.body
+
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            db.insert("publishing_accounts", {"id": "account_instagram", "platform": "instagram", "label": "Reels", "status": "not_connected", "config_json": json.dumps({"instagram_user_id": "ig_123", "public_media_base_url": "https://media.example"}), "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            db.insert("publishing_accounts", {"id": "account_tiktok", "platform": "tiktok", "label": "TikTok", "status": "not_connected", "config_json": "{}", "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            with patch.dict("os.environ", {"DEREEL_INSTAGRAM_ACCESS_TOKEN": "ig-secret", "DEREEL_TIKTOK_ACCESS_TOKEN": "tt-secret"}, clear=True), patch("dereel.publisher.urllib.request.urlopen", side_effect=[FakeResponse(b'{"id":"ig_123","username":"reels"}'), FakeResponse(b'{"data":{"open_id":"open_1","display_name":"Dewflash"}}')]) as opener:
+                instagram = check_publishing_account(db, "account_instagram")
+                tiktok = check_publishing_account(db, "account_tiktok")
+            self.assertEqual(opener.call_args_list[0].args[0].full_url, "https://graph.facebook.com/v22.0/ig_123?fields=id%2Cusername")
+            self.assertEqual(opener.call_args_list[1].args[0].full_url, "https://open.tiktokapis.com/v2/user/info/?fields=open_id%2Cdisplay_name")
+            self.assertEqual((instagram["connection_check"]["identity"], tiktok["connection_check"]["identity"]), ("reels", "Dewflash"))
 
     def test_runtime_diagnostics_reports_media_and_provider_checks(self) -> None:
         diagnostics = runtime_diagnostics()

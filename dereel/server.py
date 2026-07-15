@@ -57,7 +57,7 @@ from .pipeline import (
     update_project,
     validate_project_output,
 )
-from .publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, publish_result_status, reschedule_publish_job, update_publishing_account
+from .publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, publish_result_status, reschedule_publish_job, update_publishing_account
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
@@ -906,6 +906,10 @@ class Handler(BaseHTTPRequestHandler):
             platforms = list(payload.get("platforms") or ["youtube"])
             jobs = create_publish_jobs(self.app.db, project, platforms, payload.get("scheduled_for"), payload.get("account_id"))
             self.send_json({"jobs": [publish_job_view(job) for job in jobs]}, HTTPStatus.CREATED)
+            return
+        match = re.fullmatch(r"/api/publishing/accounts/([^/]+)/check", path)
+        if match:
+            self.send_json({"account": check_publishing_account(self.app.db, match.group(1))})
             return
         match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/publish", path)
         if match:
