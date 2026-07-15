@@ -49,7 +49,7 @@ from .pipeline import (
     update_project_asset,
     validate_project_output,
 )
-from .publisher import account_view, create_publish_jobs, platform_capabilities, publish_job, publish_job_view
+from .publisher import account_view, claim_publish_job, complete_publish_job, create_publish_jobs, mark_publish_job, platform_capabilities, publish_job, publish_job_view
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
@@ -103,6 +103,10 @@ def recover_interrupted_jobs(db: Database) -> list[str]:
                     (INTERRUPTED_JOB_ERROR, timestamp, timestamp, row["id"]),
                 )
             recovered.append(str(row["id"]))
+        connection.execute(
+            "UPDATE publish_jobs SET status = 'failed', error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE claim_token IS NOT NULL AND claim_token != ''",
+            (INTERRUPTED_JOB_ERROR, timestamp),
+        )
     return recovered
 
 
@@ -253,15 +257,18 @@ class AppState:
                     if due_at.tzinfo is None:
                         due_at = due_at.replace(tzinfo=timezone.utc)
                 except ValueError:
-                    self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": "Invalid scheduled_for timestamp", "updated_at": now_iso()})
+                    self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": "Invalid scheduled_for timestamp", "claim_token": None, "claimed_at": None, "updated_at": now_iso()})
                     continue
                 if due_at > now:
                     continue
+                if not claim_publish_job(self.db, row["id"]):
+                    continue
+                claimed = self.db.get("publish_jobs", "id", row["id"]) or dict(row)
                 try:
-                    remote_id = publish_job(self.db, dict(row))
-                    self.db.update("publish_jobs", "id", row["id"], {"status": "published", "remote_id": remote_id, "error": "", "updated_at": now_iso()})
+                    remote_id = publish_job(self.db, claimed)
+                    complete_publish_job(self.db, row["id"], "published", remote_id=remote_id)
                 except Exception as error:
-                    self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": str(error), "updated_at": now_iso()})
+                    complete_publish_job(self.db, row["id"], "failed", error=str(error))
 
 
 STATE: AppState | None = None
@@ -613,13 +620,16 @@ class Handler(BaseHTTPRequestHandler):
             job = self.app.db.get("publish_jobs", "id", job_id)
             if not job:
                 raise KeyError("Publish job not found")
+            if not claim_publish_job(self.app.db, job_id):
+                raise ValueError("Publish job is already being processed or is not ready")
+            claimed = self.app.db.get("publish_jobs", "id", job_id) or job
             try:
-                remote_id = publish_job(self.app.db, job)
+                remote_id = publish_job(self.app.db, claimed)
             except Exception as error:
-                self.app.db.update("publish_jobs", "id", job_id, {"status": "failed", "error": str(error), "updated_at": now_iso()})
+                complete_publish_job(self.app.db, job_id, "failed", error=str(error))
                 self.send_error_json(HTTPStatus.CONFLICT, str(error))
                 return
-            self.app.db.update("publish_jobs", "id", job_id, {"status": "published", "remote_id": remote_id, "error": "", "updated_at": now_iso()})
+            complete_publish_job(self.app.db, job_id, "published", remote_id=remote_id)
             self.send_json({"job": publish_job_view(self.app.db.get("publish_jobs", "id", job_id) or {})})
             return
         match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/mark-published", path)
@@ -629,8 +639,8 @@ class Handler(BaseHTTPRequestHandler):
             if not job:
                 raise KeyError("Publish job not found")
             payload = self.read_json()
-            self.app.db.update("publish_jobs", "id", job_id, {"status": "published", "remote_id": str(payload.get("remote_id") or "manual"), "updated_at": now_iso()})
-            self.send_json({"job": publish_job_view(self.app.db.get("publish_jobs", "id", job_id) or {})})
+            marked = mark_publish_job(self.app.db, job_id, str(payload.get("remote_id") or "manual"))
+            self.send_json({"job": publish_job_view(marked)})
             return
         self.send_error_json(HTTPStatus.NOT_FOUND, "API route not found")
 

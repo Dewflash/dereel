@@ -217,12 +217,14 @@ class Database:
                     scheduled_for TEXT,
                     remote_id TEXT,
                     error TEXT,
+                    claim_token TEXT,
+                    claimed_at TEXT,
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '6');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '7');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -255,7 +257,13 @@ class Database:
                 connection.execute("ALTER TABLE jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_automation ON jobs(automation_id)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_retry_of ON jobs(retry_of)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '6')")
+            publish_columns = {row[1] for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()}
+            if "claim_token" not in publish_columns:
+                connection.execute("ALTER TABLE publish_jobs ADD COLUMN claim_token TEXT")
+            if "claimed_at" not in publish_columns:
+                connection.execute("ALTER TABLE publish_jobs ADD COLUMN claimed_at TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_claim ON publish_jobs(claim_token)")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '7')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

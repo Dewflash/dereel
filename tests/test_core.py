@@ -15,7 +15,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, get_project_assets, move_project_asset, plan_project, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
-from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
+from dereel.publisher import account_view, claim_publish_job, complete_publish_job, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
 from dereel.config import Settings
 from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
 
@@ -36,11 +36,14 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(asset["tags"], ["cats", "funny"])
             with db.connection() as connection:
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
+                publish_columns = {row[1] for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()}
                 schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
             self.assertIn("automation_id", columns)
             self.assertIn("retry_of", columns)
             self.assertIn("attempt", columns)
-            self.assertEqual(schema_version, "6")
+            self.assertIn("claim_token", publish_columns)
+            self.assertIn("claimed_at", publish_columns)
+            self.assertEqual(schema_version, "7")
 
     def test_database_migrates_legacy_jobs_with_automation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -77,7 +80,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
             self.assertIn("idx_jobs_retry_of", index_names)
-            self.assertEqual(schema_version, "6")
+            self.assertEqual(schema_version, "7")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -391,6 +394,43 @@ class CoreModelTests(unittest.TestCase):
     def test_published_jobs_cannot_be_replayed(self) -> None:
         with self.assertRaisesRegex(ValueError, "already marked published"):
             publish_job(None, {"status": "published"})
+
+    def test_publish_claim_is_atomic_and_restart_releases_it(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Publish claim", "theme": "claim"})
+            job_id = "publish_claim_test"
+            db.insert(
+                "publish_jobs",
+                {
+                    "id": job_id,
+                    "project_id": project["id"],
+                    "account_id": None,
+                    "platform": "youtube",
+                    "status": "ready",
+                    "scheduled_for": "",
+                    "remote_id": "",
+                    "error": "",
+                    "claim_token": None,
+                    "claimed_at": None,
+                    "payload_json": "{}",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
+            self.assertTrue(claim_publish_job(db, job_id))
+            self.assertFalse(claim_publish_job(db, job_id))
+            self.assertTrue(publish_job_view(db.get("publish_jobs", "id", job_id) or {})["processing"])
+            recovered = recover_interrupted_jobs(db)
+            self.assertEqual(recovered, [])
+            stored = db.get("publish_jobs", "id", job_id)
+            self.assertEqual((stored["status"], stored["error"], stored["claim_token"], stored["claimed_at"]), ("failed", "Interrupted by process restart", None, None))
+            self.assertTrue(claim_publish_job(db, job_id))
+            complete_publish_job(db, job_id, "failed", error="Still unavailable")
+            marked = mark_publish_job(db, job_id, "manual-1")
+            self.assertEqual((marked["status"], marked["remote_id"]), ("published", "manual-1"))
+            with self.assertRaisesRegex(ValueError, "already published"):
+                mark_publish_job(db, job_id)
 
     def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
         class FakeResponse:

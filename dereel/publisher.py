@@ -159,8 +159,43 @@ def create_publish_jobs(
     return jobs
 
 
+def claim_publish_job(db: Database, job_id: str) -> bool:
+    token = new_id("claim")
+    with db.connection() as connection:
+        result = connection.execute(
+            "UPDATE publish_jobs SET claim_token = ?, claimed_at = ?, error = '' WHERE id = ? AND status IN ('ready', 'failed') AND (claim_token IS NULL OR claim_token = '')",
+            (token, now_iso(), job_id),
+        )
+    return result.rowcount == 1
+
+
+def complete_publish_job(db: Database, job_id: str, status: str, remote_id: str = "", error: str = "") -> dict[str, Any]:
+    if status not in {"published", "failed"}:
+        raise ValueError("Unsupported publish completion status")
+    with db.connection() as connection:
+        result = connection.execute(
+            "UPDATE publish_jobs SET status = ?, remote_id = ?, error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND claim_token IS NOT NULL AND claim_token != ''",
+            (status, remote_id, error, now_iso(), job_id),
+        )
+    if result.rowcount != 1:
+        raise ValueError("Publish job is not owned by an active local attempt")
+    return db.get("publish_jobs", "id", job_id) or {}
+
+
+def mark_publish_job(db: Database, job_id: str, remote_id: str = "manual") -> dict[str, Any]:
+    with db.connection() as connection:
+        result = connection.execute(
+            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND (claim_token IS NULL OR claim_token = '')",
+            (remote_id or "manual", now_iso(), job_id),
+        )
+    if result.rowcount != 1:
+        raise ValueError("Publish job is already published or currently being processed")
+    return db.get("publish_jobs", "id", job_id) or {}
+
+
 def publish_job_view(row: dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
+    item["processing"] = bool(item.pop("claim_token", ""))
     try:
         item["payload"] = json.loads(item.pop("payload_json", "{}"))
     except json.JSONDecodeError:
