@@ -1059,6 +1059,13 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
     project = db.get("projects", "id", project_id)
     if not project:
         raise KeyError("Project not found")
+    with db.connection() as connection:
+        pending_publish = connection.execute(
+            "SELECT id FROM publish_jobs WHERE project_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+            (project_id,),
+        ).fetchone()
+    if pending_publish:
+        raise ValueError("Project cannot be rendered while it has a pending publish job")
     project_assets = get_project_assets(db, project_id)
     enabled = [item for item in project_assets if item["enabled"]]
     if not enabled:

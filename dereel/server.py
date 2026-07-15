@@ -387,19 +387,38 @@ class AppState:
         return self.db.get("jobs", "id", job["id"]) or job
 
     def queue_render(self, project_id: str) -> dict[str, Any]:
-        project = self.db.get("projects", "id", project_id)
-        if not project:
-            raise KeyError("Project not found")
-        if project["status"] in {"planning", "rendering"}:
-            raise ValueError("Project is already processing")
         with self.db.connection() as connection:
+            project = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+            if not project:
+                raise KeyError("Project not found")
+            if project["status"] in {"planning", "rendering"}:
+                raise ValueError("Project is already processing")
+            pending_publish = connection.execute(
+                "SELECT id FROM publish_jobs WHERE project_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+                (project_id,),
+            ).fetchone()
+            if pending_publish:
+                raise ValueError("Project cannot be rendered while it has a pending publish job")
             active = connection.execute(
                 "SELECT id FROM jobs WHERE kind = 'render' AND project_id = ? AND status IN ('queued', 'running') LIMIT 1",
                 (project_id,),
             ).fetchone()
-        if active:
-            raise ValueError("A render for this project is already queued or running")
-        return self.submit_render(create_job(self.db, project_id, "render"), project_id)
+            if active:
+                raise ValueError("A render for this project is already queued or running")
+            timestamp = now_iso()
+            updated = connection.execute(
+                "UPDATE projects SET status = 'rendering', updated_at = ? WHERE id = ? AND status NOT IN ('planning', 'rendering')",
+                (timestamp, project_id),
+            )
+            if updated.rowcount != 1:
+                raise ValueError("Project is already processing")
+            job_id = new_id("job")
+            connection.execute(
+                "INSERT INTO jobs(id, project_id, automation_id, retry_of, attempt, kind, status, progress, message, error, result_json, created_at, updated_at) VALUES (?, ?, NULL, NULL, 1, 'render', 'queued', 0, 'Queued', '', '{}', ?, ?)",
+                (job_id, project_id, timestamp, timestamp),
+            )
+            job = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return self.submit_render(dict(job) if job else {"id": job_id, "project_id": project_id, "status": "queued"}, project_id)
 
     def execute_automation(self, job_id: str, automation_id: str) -> None:
         run_id = ""

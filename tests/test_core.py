@@ -681,6 +681,36 @@ class CoreModelTests(unittest.TestCase):
                 retry = app.retry_job(job["id"])
             self.assertEqual((retry["attempt"], retry["retry_of"], retry["status"]), (2, job["id"], "failed"))
 
+    def test_render_queue_reserves_project_before_worker_submission(self) -> None:
+        class HoldingPool:
+            def submit(self, *_args, **_kwargs):
+                return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(Settings(root=root, data_dir=root / "data", database_path=root / "data" / "test.sqlite3", originals_dir=root / "library", audio_dir=root / "audio", output_dir=root / "outputs", web_dir=root))
+            project = create_project(app.db, {"name": "Atomic render", "theme": "queue"})
+            with patch("dereel.server.JOB_POOL", HoldingPool()):
+                job = app.queue_render(project["id"])
+                with self.assertRaisesRegex(ValueError, "already processing"):
+                    app.queue_render(project["id"])
+            self.assertEqual((job["status"], app.db.get("projects", "id", project["id"])["status"]), ("queued", "rendering"))
+
+    def test_render_rejects_a_pending_publish_job(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(Settings(root=root, data_dir=root / "data", database_path=root / "data" / "test.sqlite3", originals_dir=root / "library", audio_dir=root / "audio", output_dir=root / "outputs", web_dir=root))
+            project = create_project(app.db, {"name": "Release lock", "theme": "queue"})
+            with app.db.connection() as connection:
+                connection.execute(
+                    "INSERT INTO publish_jobs(id, project_id, platform, status, payload_json, created_at, updated_at) VALUES (?, ?, ?, ?, '{}', ?, ?)",
+                    ("pending_render_lock", project["id"], "youtube", "ready", "2026-01-01", "2026-01-01"),
+                )
+            with self.assertRaisesRegex(ValueError, "pending publish job"):
+                app.queue_render(project["id"])
+            with self.assertRaisesRegex(ValueError, "pending publish job"):
+                render_project(app.db, project["id"], root / "outputs", lambda _progress, _message: None)
+
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")
