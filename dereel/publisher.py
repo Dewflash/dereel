@@ -235,20 +235,29 @@ def create_publish_jobs(
 def backfill_publish_integrity(db: Database) -> int:
     updated = 0
     with db.connection() as connection:
-        rows = connection.execute("SELECT id, payload_json FROM publish_jobs WHERE status IN ('ready', 'failed') AND cancelled_at IS NULL").fetchall()
+        rows = connection.execute("SELECT id, project_id, payload_json FROM publish_jobs WHERE status IN ('ready', 'failed') AND cancelled_at IS NULL").fetchall()
         for row in rows:
             payload = json_loads(row["payload_json"], {})
-            if not isinstance(payload, dict) or payload.get("media_sha256"):
+            if not isinstance(payload, dict):
                 continue
             media_path = Path(str(payload.get("media_path") or ""))
-            if not media_path.is_file():
-                continue
-            try:
-                payload["media_sha256"] = sha256_file(media_path)
-            except OSError:
-                continue
-            connection.execute("UPDATE publish_jobs SET payload_json = ?, updated_at = ? WHERE id = ?", (json_dumps(payload), now_iso(), row["id"]))
-            updated += 1
+            changed = False
+            if not payload.get("media_sha256") and media_path.is_file():
+                try:
+                    payload["media_sha256"] = sha256_file(media_path)
+                    changed = True
+                except OSError:
+                    pass
+            if not payload.get("provenance"):
+                project_row = connection.execute("SELECT * FROM projects WHERE id = ?", (row["project_id"],)).fetchone()
+                if project_row:
+                    project = dict(project_row)
+                    output_dir = Path(str(project.get("output_dir") or media_path.parent))
+                    payload["provenance"] = publish_provenance(project, output_dir)
+                    changed = True
+            if changed:
+                connection.execute("UPDATE publish_jobs SET payload_json = ?, updated_at = ? WHERE id = ?", (json_dumps(payload), now_iso(), row["id"]))
+                updated += 1
     return updated
 
 

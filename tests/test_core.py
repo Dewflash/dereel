@@ -642,6 +642,23 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(backfill_publish_integrity(db), 1)
             payload = json.loads(db.get("publish_jobs", "id", job_id)["payload_json"])
             self.assertTrue(payload["media_sha256"])
+            self.assertEqual(payload["provenance"]["asset_ids"], [])
+
+    def test_publish_integrity_backfill_restores_legacy_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            media = output_dir / "youtube.mp4"
+            media.write_bytes(b"legacy export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Legacy provenance", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir), "manifest_json": json.dumps({"inputs": [{"asset_id": "asset_legacy"}]})})
+            job_id = "legacy_provenance"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": json.dumps({"media_path": str(media)}), "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            self.assertEqual(backfill_publish_integrity(db), 1)
+            payload = json.loads(db.get("publish_jobs", "id", job_id)["payload_json"])
+            self.assertEqual((payload["media_sha256"], payload["provenance"]["asset_ids"]), (sha256_file(media), ["asset_legacy"]))
 
     def test_reused_publish_job_refreshes_provenance_and_package_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
