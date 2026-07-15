@@ -142,6 +142,19 @@ def _write_publish_manifest(output_dir: Path, job_id: str, payload: dict[str, An
     manifest_path.write_text(json.dumps(existing, indent=2))
 
 
+def _normalize_schedule(scheduled_for: str | None) -> str:
+    schedule = str(scheduled_for or "").strip()
+    if not schedule:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(schedule.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise ValueError("Invalid scheduled_for timestamp") from error
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat()
+
+
 def create_publish_jobs(
     db: Database,
     project: dict[str, Any],
@@ -154,6 +167,7 @@ def create_publish_jobs(
     output_dir = Path(project.get("output_dir") or "")
     if not output_dir.is_dir():
         raise ValueError("Render the project before creating publish jobs")
+    normalized_schedule = _normalize_schedule(scheduled_for)
     jobs: list[dict[str, Any]] = []
     for platform in platforms:
         if platform not in PLATFORM_SPECS:
@@ -185,8 +199,12 @@ def create_publish_jobs(
                 existing_payload.update(desired_payload)
                 db.update("publish_jobs", "id", existing_item["id"], {"payload_json": json_dumps(existing_payload), "updated_at": now_iso()})
                 existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
+            requested_schedule = normalized_schedule if scheduled_for is not None else str(existing_item.get("scheduled_for") or "")
+            if requested_schedule != str(existing_item.get("scheduled_for") or ""):
+                db.update("publish_jobs", "id", existing_item["id"], {"scheduled_for": requested_schedule, "updated_at": now_iso()})
+                existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
             jobs.append(existing_item)
-            _write_publish_manifest(output_dir, existing_item["id"], existing_payload, scheduled_for if scheduled_for is not None else existing_item.get("scheduled_for"))
+            _write_publish_manifest(output_dir, existing_item["id"], existing_payload, existing_item.get("scheduled_for"))
             continue
         job_id = new_id("publish")
         now = now_iso()
@@ -219,7 +237,7 @@ def create_publish_jobs(
                 "account_id": selected_account_id,
                 "platform": platform,
                 "status": "ready",
-                "scheduled_for": scheduled_for or "",
+                "scheduled_for": normalized_schedule,
                 "remote_id": "",
                 "error": "",
                 "payload_json": json_dumps(payload),
@@ -228,7 +246,7 @@ def create_publish_jobs(
             },
         )
         jobs.append(db.get("publish_jobs", "id", job_id) or {})
-        _write_publish_manifest(output_dir, job_id, payload, scheduled_for)
+        _write_publish_manifest(output_dir, job_id, payload, normalized_schedule)
     return jobs
 
 
@@ -411,15 +429,7 @@ def list_publish_attempts(db: Database, job_id: str) -> list[dict[str, Any]]:
 
 
 def reschedule_publish_job(db: Database, job_id: str, scheduled_for: str) -> dict[str, Any]:
-    schedule = str(scheduled_for or "").strip()
-    if schedule:
-        try:
-            parsed = datetime.fromisoformat(schedule.replace("Z", "+00:00"))
-        except ValueError as error:
-            raise ValueError("Invalid scheduled_for timestamp") from error
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        schedule = parsed.astimezone(timezone.utc).isoformat()
+    schedule = _normalize_schedule(scheduled_for)
     with db.connection() as connection:
         result = connection.execute(
             "UPDATE publish_jobs SET status = 'ready', scheduled_for = ?, error = '', updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",

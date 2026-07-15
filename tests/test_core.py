@@ -801,11 +801,25 @@ class CoreModelTests(unittest.TestCase):
             db.update("projects", "id", project["id"], {"output_dir": str(second_output), "manifest_json": json.dumps({"inputs": [{"asset_id": "asset_new"}]})})
             refreshed_project = db.get("projects", "id", project["id"]) or project
             with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="second-hash"):
-                second_job = create_publish_jobs(db, refreshed_project, ["youtube"])[0]
+                second_job = create_publish_jobs(db, refreshed_project, ["youtube"], scheduled_for="2026-07-16T12:00:00+08:00")[0]
             payload = json.loads(second_job["payload_json"])
             package_manifest = json.loads((second_output / "publish-manifest.json").read_text())
             self.assertEqual((second_job["id"], payload["media_sha256"], payload["provenance"]["asset_ids"]), (first_job["id"], "second-hash", ["asset_new"]))
-            self.assertEqual((package_manifest["jobs"][0]["id"], package_manifest["jobs"][0]["provenance"]["asset_ids"]), (first_job["id"], ["asset_new"]))
+            self.assertEqual(second_job["scheduled_for"], "2026-07-16T04:00:00+00:00")
+            self.assertEqual((package_manifest["jobs"][0]["id"], package_manifest["jobs"][0]["provenance"]["asset_ids"], package_manifest["jobs"][0]["scheduled_for"]), (first_job["id"], ["asset_new"], "2026-07-16T04:00:00+00:00"))
+
+    def test_publish_job_creation_rejects_invalid_schedule(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "youtube.mp4").write_bytes(b"export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Invalid schedule", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            with patch("dereel.publisher.validate_export", return_value=[]):
+                with self.assertRaisesRegex(ValueError, "Invalid scheduled_for"):
+                    create_publish_jobs(db, db.get("projects", "id", project["id"]) or project, ["youtube"], scheduled_for="not-a-date")
 
     def test_publish_failure_fallback_closes_attempt_and_releases_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
