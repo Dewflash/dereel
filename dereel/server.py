@@ -41,6 +41,7 @@ from .pipeline import (
     render_project,
     set_job,
     update_project_asset,
+    validate_project_output,
 )
 from .publisher import account_view, create_publish_jobs, platform_capabilities, publish_job, publish_job_view
 from .scout import configured_providers, import_provider_asset, search as search_provider
@@ -483,6 +484,10 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/projects":
             self.send_json({"project": create_project(self.app.db, self.read_json())}, HTTPStatus.CREATED)
+            return
+        match = re.fullmatch(r"/api/projects/([^/]+)/validate-output", path)
+        if match:
+            self.send_json({"project": validate_project_output(self.app.db, match.group(1))})
             return
         if path == "/api/automations":
             self.send_json({"automation": create_automation(self.app.db, self.read_json())}, HTTPStatus.CREATED)

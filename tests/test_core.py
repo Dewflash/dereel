@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, score_breakdown, set_job, update_project_asset, validate_render_outputs
+from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
@@ -375,6 +375,9 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn(result["manifest"]["title_treatment"]["mode"], {"drawtext", "unavailable"})
             self.assertEqual(result["manifest"]["title_treatment"]["applied"], result["manifest"]["title_treatment"]["mode"] == "drawtext")
             self.assertEqual(result["manifest"]["captions"]["mode"], "static_project_caption")
+            validated = validate_project_output(db, project["id"])
+            self.assertEqual(validated["status"], "ready")
+            self.assertEqual(validated["manifest"]["validation"]["status"], "passed")
             credits = json.loads((Path(result["output_dir"]) / "credits.json").read_text())
             self.assertEqual(credits["assets"], [asset["id"]])
             self.assertEqual(credits["provenance"][0]["fingerprint"], asset["fingerprint"])

@@ -634,3 +634,18 @@ def validate_render_outputs(output_dir: Path) -> dict[str, Any]:
             report["problems"].append(f"{name}: " + "; ".join(entry["problems"]))
         report["outputs"][name] = entry
     return report
+
+
+def validate_project_output(db: Database, project_id: str) -> dict[str, Any]:
+    project = db.get("projects", "id", project_id)
+    if not project:
+        raise KeyError("Project not found")
+    output_dir = Path(project.get("output_dir") or "")
+    if not output_dir.is_dir():
+        raise ValueError("Project output directory is missing")
+    manifest = json_loads(project.get("manifest_json"), {})
+    validation = validate_render_outputs(output_dir)
+    manifest["validation"] = validation
+    status = "ready" if validation["status"] == "passed" else "failed"
+    db.update("projects", "id", project_id, {"status": status, "manifest_json": json_dumps(manifest), "updated_at": now_iso()})
+    return project_view(db, db.get("projects", "id", project_id) or {})
