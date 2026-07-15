@@ -319,6 +319,7 @@ def create_publish_jobs(
         prepared.append((platform, payload))
     jobs: list[dict[str, Any]] = []
     with db.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
         for platform, payload in prepared:
             selected_account_id = selected_account_ids.get(platform)
             if selected_account_id:
@@ -330,6 +331,8 @@ def create_publish_jobs(
                 (project["id"], platform),
             ).fetchone()
             if existing:
+                if existing["claim_token"]:
+                    raise ValueError("Publish job is currently being processed")
                 existing_item = dict(existing)
                 existing_payload = json_loads(existing_item.get("payload_json"), {})
                 if not isinstance(existing_payload, dict):
