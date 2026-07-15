@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], providerResults: [], assetFilter: "all", selectedAssets: new Set(), selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], platforms: [], providerResults: [], assetFilter: "all", selectedAssets: new Set(), selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -47,8 +47,8 @@ function showView(view) {
 }
 
 async function refresh() {
-  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing, automations] = await Promise.all([
-    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"), api("/api/automations"),
+  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing, automations, platforms] = await Promise.all([
+    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"), api("/api/automations"), api("/api/publishing/platforms"),
   ]);
   state.assets = allAssets.assets || [];
   state.visibleAssets = filteredAssets.assets || [];
@@ -57,6 +57,7 @@ async function refresh() {
   state.accounts = accounts.accounts || [];
   state.publishingJobs = publishing.jobs || [];
   state.automations = automations.automations || [];
+  state.platforms = platforms.platforms || [];
   renderDashboard(dashboard);
   renderAssets();
   renderAudioSelect();
@@ -167,9 +168,16 @@ function renderPublisher() {
     state.publishDraft.projectId = selectedProject?.id || "";
     projectSelect.value = state.publishDraft.projectId;
   }
-  $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · OAuth connection pending</small></div>${statusPill(account.status)}</div>`).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
+  renderPlatformReadiness();
+  $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => { const tokenEnv = account.config?.token_env || "token not configured"; const detail = account.status === "connected" ? `token detected · ${tokenEnv}` : `set ${tokenEnv}`; return `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · ${escapeHtml(detail)}</small></div>${statusPill(account.status)}</div>`; }).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
   $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => `<div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${statusPill(job.status)}${job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : ""}</div>`).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
+}
+
+function renderPlatformReadiness() {
+  const node = $("#platform-readiness");
+  if (!node) return;
+  node.innerHTML = state.platforms.length ? state.platforms.map((platform) => `<div class="platform-status"><div class="row-main"><strong>${escapeHtml(platform.label)}</strong><small>${escapeHtml(String(platform.mode || "").replaceAll("_", " "))} · ${escapeHtml(platform.token_env)}</small></div>${statusPill(platform.configured ? "configured" : "not_configured")}</div>`).join("") : empty("No platform adapters", "Platform capabilities are unavailable.");
 }
 
 function formatInterval(minutes) {
