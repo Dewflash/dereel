@@ -52,7 +52,7 @@ from .pipeline import (
     update_project,
     validate_project_output,
 )
-from .publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view
+from .publisher import account_view, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, reschedule_publish_job, update_publishing_account
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
@@ -679,6 +679,17 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             self.send_json({"project": update_project(self.app.db, match.group(1), self.read_json())})
             return
+        match = re.fullmatch(r"/api/publishing/accounts/([^/]+)", path)
+        if match:
+            self.send_json({"account": update_publishing_account(self.app.db, match.group(1), self.read_json())})
+            return
+        match = re.fullmatch(r"/api/publishing/jobs/([^/]+)", path)
+        if match:
+            payload = self.read_json()
+            if "scheduled_for" not in payload:
+                raise ValueError("scheduled_for is required")
+            self.send_json({"job": reschedule_publish_job(self.app.db, match.group(1), str(payload.get("scheduled_for") or ""))})
+            return
         if path == "/api/assets/bulk":
             payload = self.read_json()
             asset_ids = payload.get("ids")
@@ -726,6 +737,15 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             delete_automation(self.app.db, match.group(1))
             self.send_json({"deleted": match.group(1)})
+            return
+        match = re.fullmatch(r"/api/publishing/accounts/([^/]+)", path)
+        if match:
+            delete_publishing_account(self.app.db, match.group(1))
+            self.send_json({"deleted": match.group(1)})
+            return
+        match = re.fullmatch(r"/api/publishing/jobs/([^/]+)", path)
+        if match:
+            self.send_json({"job": cancel_publish_job(self.app.db, match.group(1))})
             return
         match = re.fullmatch(r"/api/projects/([^/]+)/assets/([^/]+)", path)
         if match:

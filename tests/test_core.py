@@ -15,7 +15,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, delete_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
-from dereel.publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
+from dereel.publisher import account_view, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
 from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
 
@@ -44,8 +44,9 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("claim_token", publish_columns)
             self.assertIn("claimed_at", publish_columns)
-            self.assertEqual(schema_version, "8")
+            self.assertEqual(schema_version, "9")
             self.assertIn("attempt_number", attempt_columns)
+            self.assertIn("cancelled_at", publish_columns)
 
     def test_database_migrates_legacy_jobs_with_automation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -82,7 +83,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
             self.assertIn("idx_jobs_retry_of", index_names)
-            self.assertEqual(schema_version, "8")
+            self.assertEqual(schema_version, "9")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -351,6 +352,27 @@ class CoreModelTests(unittest.TestCase):
             project = create_project(db, {"name": "Draft release", "theme": "cats"})
             with self.assertRaisesRegex(ValueError, "must be rendered and ready"):
                 create_publish_jobs(db, project, ["youtube"])
+
+    def test_publisher_account_and_outbox_lifecycle_is_guarded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            account_id = "account_lifecycle"
+            project = create_project(db, {"name": "Release", "theme": "cats"})
+            db.insert("publishing_accounts", {"id": account_id, "platform": "instagram", "label": "Old label", "status": "not_connected", "config_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            updated_account = update_publishing_account(db, account_id, {"label": "Main Reels", "instagram_user_id": "ig_123", "public_media_base_url": "https://media.example"})
+            self.assertEqual((updated_account["label"], updated_account["config"]["instagram_user_id"]), ("Main Reels", "ig_123"))
+            job_id = "outbox_lifecycle"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": account_id, "platform": "instagram", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            with self.assertRaisesRegex(ValueError, "pending publish job"):
+                delete_publishing_account(db, account_id)
+            scheduled = reschedule_publish_job(db, job_id, "2026-02-01T12:00:00+00:00")
+            self.assertEqual(scheduled["scheduled_for"], "2026-02-01T12:00:00+00:00")
+            cancelled = cancel_publish_job(db, job_id)
+            self.assertTrue(cancelled["cancelled"])
+            self.assertEqual(cancelled["status"], "cancelled")
+            self.assertFalse(claim_publish_job(db, job_id))
+            delete_publishing_account(db, account_id)
+            self.assertIsNone(db.get("publishing_accounts", "id", account_id))
 
     def test_delete_project_cleans_package_keeps_sources_and_blocks_active_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +50,35 @@ def account_view(row: dict[str, Any]) -> dict[str, Any]:
     }
     item["status"] = "connected" if token_env and os.getenv(token_env) else "not_connected"
     return item
+
+
+def update_publishing_account(db: Database, account_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    account = db.get("publishing_accounts", "id", account_id)
+    if not account:
+        raise KeyError("Publishing account not found")
+    label = str(payload.get("label", account["label"]) or account["platform"].title()).strip()[:120]
+    config = json_loads(account.get("config_json"), {})
+    if account["platform"] == "instagram":
+        if "instagram_user_id" in payload:
+            config["instagram_user_id"] = str(payload.get("instagram_user_id") or "").strip()
+        if "public_media_base_url" in payload:
+            config["public_media_base_url"] = str(payload.get("public_media_base_url") or "").strip().rstrip("/")
+    db.update("publishing_accounts", "id", account_id, {"label": label, "config_json": json_dumps(config), "updated_at": now_iso()})
+    return account_view(db.get("publishing_accounts", "id", account_id) or {})
+
+
+def delete_publishing_account(db: Database, account_id: str) -> None:
+    with db.connection() as connection:
+        account = connection.execute("SELECT id FROM publishing_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not account:
+            raise KeyError("Publishing account not found")
+        pending = connection.execute(
+            "SELECT id FROM publish_jobs WHERE account_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+            (account_id,),
+        ).fetchone()
+        if pending:
+            raise ValueError("Account cannot be deleted while it has a pending publish job")
+        connection.execute("DELETE FROM publishing_accounts WHERE id = ?", (account_id,))
 
 
 def validate_export(path: Path, platform: str) -> list[str]:
@@ -165,7 +195,7 @@ def claim_publish_job(db: Database, job_id: str) -> bool:
     token = new_id("claim")
     with db.connection() as connection:
         result = connection.execute(
-            "UPDATE publish_jobs SET claim_token = ?, claimed_at = ?, error = '' WHERE id = ? AND status IN ('ready', 'failed') AND (claim_token IS NULL OR claim_token = '')",
+            "UPDATE publish_jobs SET claim_token = ?, claimed_at = ?, error = '' WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
             (token, now_iso(), job_id),
         )
     return result.rowcount == 1
@@ -213,7 +243,7 @@ def complete_publish_attempt(
             (status, remote_id or "", error or "", finished, finished, attempt_id),
         )
         job_result = connection.execute(
-            "UPDATE publish_jobs SET status = ?, remote_id = ?, error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND claim_token IS NOT NULL AND claim_token != ''",
+            "UPDATE publish_jobs SET status = ?, remote_id = ?, error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL AND claim_token IS NOT NULL AND claim_token != ''",
             (status, remote_id or "", error or "", finished, attempt["publish_job_id"]),
         )
         if attempt_result.rowcount != 1 or job_result.rowcount != 1:
@@ -237,7 +267,7 @@ def complete_publish_job(db: Database, job_id: str, status: str, remote_id: str 
 def mark_publish_job(db: Database, job_id: str, remote_id: str = "manual") -> dict[str, Any]:
     with db.connection() as connection:
         result = connection.execute(
-            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND (claim_token IS NULL OR claim_token = '')",
+            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
             (remote_id or "manual", now_iso(), job_id),
         )
     if result.rowcount != 1:
@@ -248,6 +278,9 @@ def mark_publish_job(db: Database, job_id: str, remote_id: str = "manual") -> di
 def publish_job_view(row: dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
     item["processing"] = bool(item.pop("claim_token", ""))
+    item["cancelled"] = bool(item.get("cancelled_at"))
+    if item["cancelled"]:
+        item["status"] = "cancelled"
     try:
         item["payload"] = json.loads(item.pop("payload_json", "{}"))
     except json.JSONDecodeError:
@@ -262,6 +295,38 @@ def list_publish_attempts(db: Database, job_id: str) -> list[dict[str, Any]]:
             (job_id,),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+def reschedule_publish_job(db: Database, job_id: str, scheduled_for: str) -> dict[str, Any]:
+    schedule = str(scheduled_for or "").strip()
+    if schedule:
+        try:
+            parsed = datetime.fromisoformat(schedule.replace("Z", "+00:00"))
+        except ValueError as error:
+            raise ValueError("Invalid scheduled_for timestamp") from error
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        schedule = parsed.astimezone(timezone.utc).isoformat()
+    with db.connection() as connection:
+        result = connection.execute(
+            "UPDATE publish_jobs SET status = 'ready', scheduled_for = ?, error = '', updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
+            (schedule, now_iso(), job_id),
+        )
+    if result.rowcount != 1:
+        raise ValueError("Publish job is not available to reschedule")
+    return publish_job_view(db.get("publish_jobs", "id", job_id) or {})
+
+
+def cancel_publish_job(db: Database, job_id: str) -> dict[str, Any]:
+    timestamp = now_iso()
+    with db.connection() as connection:
+        result = connection.execute(
+            "UPDATE publish_jobs SET status = 'failed', error = 'Cancelled by operator', cancelled_at = ?, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
+            (timestamp, timestamp, job_id),
+        )
+    if result.rowcount != 1:
+        raise ValueError("Publish job is already published, cancelled, or being processed")
+    return publish_job_view(db.get("publish_jobs", "id", job_id) or {})
 
 
 def _http_error(error: urllib.error.HTTPError) -> RuntimeError:
@@ -467,6 +532,8 @@ def publish_instagram_reel(payload: dict[str, Any], account: dict[str, Any], acc
 def publish_job(db: Database, job: dict[str, Any]) -> str:
     if job.get("status") == "published":
         raise ValueError("Publish job is already marked published")
+    if job.get("cancelled_at"):
+        raise ValueError("Publish job is cancelled")
     if job.get("status") not in {"ready", "failed"}:
         raise ValueError("Publish job is not ready to run")
     payload = json.loads(job.get("payload_json", "{}"))

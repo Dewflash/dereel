@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -243,7 +243,7 @@ function renderPublisher() {
     projectSelect.value = state.publishDraft.projectId;
   }
   renderPlatformReadiness();
-  $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => { const tokenEnv = account.config?.token_env || "token not configured"; const detail = account.status === "connected" ? `token detected · ${tokenEnv}` : `set ${tokenEnv}`; return `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · ${escapeHtml(detail)}</small></div>${statusPill(account.status)}</div>`; }).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
+  $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => { const tokenEnv = account.config?.token_env || "token not configured"; const detail = account.status === "connected" ? `token detected · ${tokenEnv}` : `set ${tokenEnv}`; return `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · ${escapeHtml(detail)}</small></div>${statusPill(account.status)}<button class="row-action" data-edit-account="${escapeHtml(account.id)}">Edit</button><button class="row-action danger-action" data-delete-account="${escapeHtml(account.id)}">Delete</button></div>`; }).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
   $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => {
     const sourceCount = Number(job.payload?.provenance?.asset_ids?.length || 0);
@@ -252,9 +252,21 @@ function renderPublisher() {
     const attempts = state.publishAttempts[job.id];
     const history = attempts ? `<div class="publish-history">${attempts.length ? attempts.map((attempt) => `<div class="attempt-row"><div class="row-main"><strong>Attempt ${escapeHtml(attempt.attempt_number)}</strong><small>${escapeHtml(attempt.trigger)} · ${escapeHtml(attempt.started_at)}${attempt.finished_at ? ` · finished ${escapeHtml(attempt.finished_at)}` : ""}${attempt.remote_id ? ` · ${escapeHtml(attempt.remote_id)}` : ""}${attempt.error ? ` · ${escapeHtml(attempt.error)}` : ""}</small></div>${statusPill(attempt.status)}</div>`).join("") : empty("No attempts yet", "This outbox row has not reached a publisher adapter.")}</div>` : "";
     const historyButton = `<button class="row-action" data-publish-history="${job.id}">${attempts ? "Hide history" : "History"}</button>`;
+    const editable = !processing && ["ready", "failed"].includes(job.status);
+    const scheduleButton = editable ? `<button class="row-action" data-edit-schedule="${job.id}">Schedule</button>` : "";
+    const cancelButton = editable ? `<button class="row-action danger-action" data-cancel-publish="${job.id}">Cancel</button>` : "";
     const action = processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : "";
-    return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${action}</div>${history}</div>`;
+    const scheduleEditor = state.publishScheduleJobId === job.id && editable ? `<div class="publish-schedule"><input class="publish-schedule-input" type="datetime-local" value="${escapeHtml(toDatetimeLocal(job.scheduled_for))}" /><button class="row-action" data-save-schedule="${job.id}">Save</button><button class="row-action" data-cancel-schedule="${job.id}">Close</button></div>` : "";
+    return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${scheduleButton}${cancelButton}${action}</div>${scheduleEditor}${history}</div>`;
   }).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
+}
+
+function toDatetimeLocal(value) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (number) => String(number).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
 function renderPlatformReadiness() {
@@ -446,7 +458,7 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -457,6 +469,7 @@ async function handleClick(event) {
     if (action === "close-asset-inspector") { state.inspectedAssetId = ""; renderAssets(); return; }
     if (bulkAction) { await submitBulkReview(bulkAction); return; }
     if (action === "cancel-automation") { resetAutomationForm(); return; }
+    if (action === "cancel-account-edit") { resetAccountForm(); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }
     if (project) { showView("forge"); const selected = state.projects.find((item) => item.id === project); if (selected) renderInspector(selected); return; }
     if (approveLicensed) { await api(`/api/assets/${approveLicensed}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "licensed_distribution" }) }); toast("Provider license approved"); await refresh(); return; }
@@ -468,6 +481,8 @@ async function handleClick(event) {
     if (toggleAutomation) { const automation = state.automations.find((item) => item.id === toggleAutomation); if (automation) { await api(`/api/automations/${toggleAutomation}`, { method: "PATCH", body: JSON.stringify({ enabled: !automation.enabled }) }); toast(automation.enabled ? "Automation paused" : "Automation enabled"); await refresh(); } return; }
     if (deleteAutomation) { if (!window.confirm("Delete this automation recipe? Imported assets will stay in the library.")) return; await api(`/api/automations/${deleteAutomation}`, { method: "DELETE" }); toast("Automation deleted"); await refresh(); return; }
     if (deleteProject) { if (!window.confirm("Delete this project and its rendered package? Source assets will stay in Scout.")) return; await api(`/api/projects/${deleteProject}`, { method: "DELETE" }); if (state.selectedProject?.id === deleteProject) state.selectedProject = null; toast("Project deleted"); await refresh(); return; }
+    if (editAccount) { editAccountForm(editAccount); return; }
+    if (deleteAccount) { if (!window.confirm("Delete this channel configuration? Pending publish jobs must be cleared first.")) return; await api(`/api/publishing/accounts/${deleteAccount}`, { method: "DELETE" }); if (state.editingAccountId === deleteAccount) resetAccountForm(); toast("Channel deleted"); await refresh(); return; }
     if (rejectAsset) { await api(`/api/assets/${rejectAsset}`, { method: "PATCH", body: JSON.stringify({ status: "rejected", rights_status: "blocked" }) }); toast("Asset rejected"); await refresh(); return; }
     if (inspectAsset) { state.inspectedAssetId = inspectAsset; showView("scout"); renderAssetInspector(); return; }
     if (validateOutput) { await api(`/api/projects/${validateOutput}/validate-output`, { method: "POST", body: "{}" }); toast("Output package validated"); await refresh(); return; }
@@ -483,6 +498,10 @@ async function handleClick(event) {
     if (publishHistory) { if (state.publishAttempts[publishHistory]) { delete state.publishAttempts[publishHistory]; } else { const result = await api(`/api/publishing/jobs/${publishHistory}/attempts`); state.publishAttempts[publishHistory] = result.attempts || []; } renderPublisher(); return; }
     if (runPublish) { await api(`/api/publishing/jobs/${runPublish}/publish`, { method: "POST", body: "{}" }); toast("Published successfully"); await refresh(); return; }
     if (markPublished) { await api(`/api/publishing/jobs/${markPublished}/mark-published`, { method: "POST", body: JSON.stringify({ remote_id: "manual" }) }); toast("Marked as posted"); await refresh(); return; }
+    if (editSchedule) { state.publishScheduleJobId = editSchedule; renderPublisher(); return; }
+    if (cancelSchedule) { state.publishScheduleJobId = ""; renderPublisher(); return; }
+    if (saveSchedule) { const input = $(".publish-schedule-input", target.closest(".publish-entry")); const value = input?.value ? new Date(input.value) : null; if (value && Number.isNaN(value.getTime())) throw new Error("Schedule time is invalid"); await api(`/api/publishing/jobs/${saveSchedule}`, { method: "PATCH", body: JSON.stringify({ scheduled_for: value ? value.toISOString() : "" }) }); state.publishScheduleJobId = ""; toast(value ? "Schedule updated" : "Schedule cleared"); await refresh(); return; }
+    if (cancelPublish) { if (!window.confirm("Cancel this outbox job? Its attempt history will stay available.")) return; await api(`/api/publishing/jobs/${cancelPublish}`, { method: "DELETE" }); state.publishScheduleJobId = ""; toast("Publish job cancelled"); await refresh(); return; }
   } catch (error) { toast(error.message, true); }
 }
 
@@ -543,8 +562,47 @@ async function submitProjectSettings(form) {
   } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
 }
 
+function resetAccountForm() {
+  const form = $("#account-form");
+  if (!form) return;
+  state.editingAccountId = "";
+  form.reset();
+  $("#account-form-eyebrow").textContent = "ACCOUNTS";
+  $("#account-form-title").textContent = "Add channel";
+  $("#account-submit").textContent = "+ Add account";
+  $("#account-cancel").hidden = true;
+  $("#account-platform").disabled = false;
+  updateAccountFields();
+}
+
+function editAccountForm(accountId) {
+  const account = state.accounts.find((item) => item.id === accountId);
+  const form = $("#account-form");
+  if (!account || !form) return;
+  state.editingAccountId = account.id;
+  $("#account-platform").value = account.platform;
+  $("#account-platform").disabled = true;
+  $("input[name=label]", form).value = account.label;
+  $("input[name=instagram_user_id]", form).value = account.config?.instagram_user_id || "";
+  $("input[name=public_media_base_url]", form).value = account.config?.public_media_base_url || "";
+  $("#account-form-eyebrow").textContent = "EDIT CHANNEL";
+  $("#account-form-title").textContent = account.label;
+  $("#account-submit").textContent = "Save account";
+  $("#account-cancel").hidden = false;
+  updateAccountFields();
+  showView("publisher");
+}
+
 async function submitAccount(form) {
-  try { const data = Object.fromEntries(new FormData(form)); await api("/api/publishing/accounts", { method: "POST", body: JSON.stringify(data) }); toast("Channel added"); form.reset(); await refresh(); } catch (error) { toast(error.message, true); }
+  try {
+    const data = Object.fromEntries(new FormData(form));
+    const endpoint = state.editingAccountId ? `/api/publishing/accounts/${state.editingAccountId}` : "/api/publishing/accounts";
+    const method = state.editingAccountId ? "PATCH" : "POST";
+    await api(endpoint, { method, body: JSON.stringify(data) });
+    toast(state.editingAccountId ? "Channel saved" : "Channel added");
+    resetAccountForm();
+    await refresh();
+  } catch (error) { toast(error.message, true); }
 }
 
 function updateAccountFields() {

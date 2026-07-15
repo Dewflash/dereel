@@ -219,6 +219,7 @@ class Database:
                     error TEXT,
                     claim_token TEXT,
                     claimed_at TEXT,
+                    cancelled_at TEXT,
                     payload_json TEXT NOT NULL DEFAULT '{}',
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -240,7 +241,7 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC);
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '8');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '9');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -278,9 +279,11 @@ class Database:
                 connection.execute("ALTER TABLE publish_jobs ADD COLUMN claim_token TEXT")
             if "claimed_at" not in publish_columns:
                 connection.execute("ALTER TABLE publish_jobs ADD COLUMN claimed_at TEXT")
+            if "cancelled_at" not in publish_columns:
+                connection.execute("ALTER TABLE publish_jobs ADD COLUMN cancelled_at TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_claim ON publish_jobs(claim_token)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '8')")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '9')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:
