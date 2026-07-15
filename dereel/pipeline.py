@@ -456,6 +456,30 @@ def update_project(db: Database, project_id: str, payload: dict[str, Any]) -> di
     return project_view(db, db.get("projects", "id", project_id) or {})
 
 
+def delete_project(db: Database, project_id: str, output_root: Path | None = None) -> None:
+    with db.connection() as connection:
+        project = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not project:
+            raise KeyError("Project not found")
+        active_job = connection.execute(
+            "SELECT id FROM jobs WHERE project_id = ? AND status IN ('queued', 'running') LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if active_job:
+            raise ValueError("Project cannot be deleted while a job is processing")
+        publish_job = connection.execute(
+            "SELECT id FROM publish_jobs WHERE project_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+            (project_id,),
+        ).fetchone()
+        if publish_job:
+            raise ValueError("Project cannot be deleted while it has a pending publish job")
+        connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    if output_root:
+        project_dir = output_root.resolve() / project_id
+        if output_root.resolve() in project_dir.parents:
+            shutil.rmtree(project_dir, ignore_errors=True)
+
+
 def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
     try:
         parsed = float(value)

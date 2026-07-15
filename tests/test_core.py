@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, delete_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
 from dereel.publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
@@ -351,6 +351,25 @@ class CoreModelTests(unittest.TestCase):
             project = create_project(db, {"name": "Draft release", "theme": "cats"})
             with self.assertRaisesRegex(ValueError, "must be rendered and ready"):
                 create_publish_jobs(db, project, ["youtube"])
+
+    def test_delete_project_cleans_package_keeps_sources_and_blocks_active_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            asset = create_asset(db, kind="media", title="Shared source", local_path=str(root / "source.mp4"), rights_status="owned_distribution", metadata={"duration": 4, "width": 720, "height": 1280})
+            project = create_project(db, {"name": "Disposable", "theme": "cleanup"})
+            add_project_asset(db, project["id"], asset["id"], {})
+            job = create_job(db, project["id"], "render")
+            with self.assertRaisesRegex(ValueError, "while a job is processing"):
+                delete_project(db, project["id"], root / "outputs")
+            set_job(db, job["id"], status="completed", message="Done")
+            package = root / "outputs" / project["id"] / "run-1"
+            package.mkdir(parents=True)
+            (package / "final.mp4").write_bytes(b"old")
+            delete_project(db, project["id"], root / "outputs")
+            self.assertIsNone(db.get("projects", "id", project["id"]))
+            self.assertIsNotNone(db.get("assets", "id", asset["id"]))
+            self.assertFalse((root / "outputs" / project["id"]).exists())
 
     def test_timeline_moves_clips_and_marks_ready_projects_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

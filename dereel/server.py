@@ -38,6 +38,7 @@ from .pipeline import (
     create_asset,
     create_job,
     create_project,
+    delete_project,
     get_project_assets,
     list_assets,
     move_project_asset,
@@ -729,6 +730,11 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/projects/([^/]+)/assets/([^/]+)", path)
         if match:
             self.send_json({"project": remove_project_asset(self.app.db, match.group(1), match.group(2))})
+            return
+        match = re.fullmatch(r"/api/projects/([^/]+)", path)
+        if match:
+            delete_project(self.app.db, match.group(1), self.app.settings.output_dir)
+            self.send_json({"deleted": match.group(1)})
             return
         match = re.fullmatch(r"/api/assets/([^/]+)", path)
         if match:
