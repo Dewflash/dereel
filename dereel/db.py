@@ -224,7 +224,23 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '7');
+                CREATE TABLE IF NOT EXISTS publish_attempts (
+                    id TEXT PRIMARY KEY,
+                    publish_job_id TEXT NOT NULL REFERENCES publish_jobs(id) ON DELETE CASCADE,
+                    attempt_number INTEGER NOT NULL,
+                    trigger TEXT NOT NULL CHECK(trigger IN ('manual', 'scheduler')),
+                    status TEXT NOT NULL CHECK(status IN ('running', 'published', 'failed')),
+                    remote_id TEXT NOT NULL DEFAULT '',
+                    error TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(publish_job_id, attempt_number)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC);
+
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '8');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -263,7 +279,8 @@ class Database:
             if "claimed_at" not in publish_columns:
                 connection.execute("ALTER TABLE publish_jobs ADD COLUMN claimed_at TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_claim ON publish_jobs(claim_token)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '7')")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC)")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '8')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

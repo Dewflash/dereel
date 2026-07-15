@@ -169,6 +169,56 @@ def claim_publish_job(db: Database, job_id: str) -> bool:
     return result.rowcount == 1
 
 
+def begin_publish_attempt(db: Database, job_id: str, trigger: str) -> dict[str, Any]:
+    if trigger not in {"manual", "scheduler"}:
+        raise ValueError("Unsupported publish trigger")
+    attempt_id = new_id("attempt")
+    now = now_iso()
+    with db.connection() as connection:
+        job = connection.execute("SELECT claim_token FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
+        if not job or not job["claim_token"]:
+            raise ValueError("Publish job is not owned by an active local attempt")
+        next_number = connection.execute(
+            "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM publish_attempts WHERE publish_job_id = ?",
+            (job_id,),
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO publish_attempts (id, publish_job_id, attempt_number, trigger, status, remote_id, error, started_at, finished_at, updated_at) VALUES (?, ?, ?, ?, 'running', '', '', ?, NULL, ?)",
+            (attempt_id, job_id, next_number, trigger, now, now),
+        )
+    return db.get("publish_attempts", "id", attempt_id) or {}
+
+
+def complete_publish_attempt(
+    db: Database,
+    attempt_id: str,
+    status: str,
+    remote_id: str = "",
+    error: str = "",
+) -> dict[str, Any]:
+    if status not in {"published", "failed"}:
+        raise ValueError("Unsupported publish completion status")
+    finished = now_iso()
+    with db.connection() as connection:
+        attempt = connection.execute("SELECT * FROM publish_attempts WHERE id = ?", (attempt_id,)).fetchone()
+        if not attempt or attempt["status"] != "running":
+            raise ValueError("Publish attempt is not running")
+        job = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (attempt["publish_job_id"],)).fetchone()
+        if not job or not job["claim_token"]:
+            raise ValueError("Publish job is not owned by an active local attempt")
+        attempt_result = connection.execute(
+            "UPDATE publish_attempts SET status = ?, remote_id = ?, error = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+            (status, remote_id or "", error or "", finished, finished, attempt_id),
+        )
+        job_result = connection.execute(
+            "UPDATE publish_jobs SET status = ?, remote_id = ?, error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND claim_token IS NOT NULL AND claim_token != ''",
+            (status, remote_id or "", error or "", finished, attempt["publish_job_id"]),
+        )
+        if attempt_result.rowcount != 1 or job_result.rowcount != 1:
+            raise ValueError("Publish attempt could not be finalized")
+    return db.get("publish_jobs", "id", attempt["publish_job_id"]) or {}
+
+
 def complete_publish_job(db: Database, job_id: str, status: str, remote_id: str = "", error: str = "") -> dict[str, Any]:
     if status not in {"published", "failed"}:
         raise ValueError("Unsupported publish completion status")
@@ -201,6 +251,15 @@ def publish_job_view(row: dict[str, Any]) -> dict[str, Any]:
     except json.JSONDecodeError:
         item["payload"] = {}
     return item
+
+
+def list_publish_attempts(db: Database, job_id: str) -> list[dict[str, Any]]:
+    with db.connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM publish_attempts WHERE publish_job_id = ? ORDER BY attempt_number DESC",
+            (job_id,),
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def _http_error(error: urllib.error.HTTPError) -> RuntimeError:

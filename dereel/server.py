@@ -50,7 +50,7 @@ from .pipeline import (
     update_project_asset,
     validate_project_output,
 )
-from .publisher import account_view, claim_publish_job, complete_publish_job, create_publish_jobs, mark_publish_job, platform_capabilities, publish_job, publish_job_view
+from .publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
@@ -104,6 +104,10 @@ def recover_interrupted_jobs(db: Database) -> list[str]:
                     (INTERRUPTED_JOB_ERROR, timestamp, timestamp, row["id"]),
                 )
             recovered.append(str(row["id"]))
+        connection.execute(
+            "UPDATE publish_attempts SET status = 'failed', error = ?, finished_at = ?, updated_at = ? WHERE status = 'running'",
+            (INTERRUPTED_JOB_ERROR, timestamp, timestamp),
+        )
         connection.execute(
             "UPDATE publish_jobs SET status = 'failed', error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE claim_token IS NOT NULL AND claim_token != ''",
             (INTERRUPTED_JOB_ERROR, timestamp),
@@ -265,11 +269,16 @@ class AppState:
                 if not claim_publish_job(self.db, row["id"]):
                     continue
                 claimed = self.db.get("publish_jobs", "id", row["id"]) or dict(row)
+                attempt: dict[str, Any] | None = None
                 try:
+                    attempt = begin_publish_attempt(self.db, row["id"], "scheduler")
                     remote_id = publish_job(self.db, claimed)
-                    complete_publish_job(self.db, row["id"], "published", remote_id=remote_id)
+                    complete_publish_attempt(self.db, attempt["id"], "published", remote_id=remote_id)
                 except Exception as error:
-                    complete_publish_job(self.db, row["id"], "failed", error=str(error))
+                    if attempt:
+                        complete_publish_attempt(self.db, attempt["id"], "failed", error=str(error))
+                    else:
+                        complete_publish_job(self.db, row["id"], "failed", error=str(error))
 
 
 STATE: AppState | None = None
@@ -437,6 +446,12 @@ class Handler(BaseHTTPRequestHandler):
             with self.app.db.connection() as connection:
                 rows = connection.execute("SELECT * FROM publish_jobs ORDER BY updated_at DESC LIMIT 30").fetchall()
             self.send_json({"jobs": [publish_job_view(dict(row)) for row in rows]})
+            return
+        match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/attempts", path)
+        if match:
+            if not self.app.db.get("publish_jobs", "id", match.group(1)):
+                raise KeyError("Publish job not found")
+            self.send_json({"attempts": list_publish_attempts(self.app.db, match.group(1))})
             return
         match = re.fullmatch(r"/api/assets/([^/]+)/stream", path)
         if match:
@@ -624,13 +639,18 @@ class Handler(BaseHTTPRequestHandler):
             if not claim_publish_job(self.app.db, job_id):
                 raise ValueError("Publish job is already being processed or is not ready")
             claimed = self.app.db.get("publish_jobs", "id", job_id) or job
+            attempt: dict[str, Any] | None = None
             try:
+                attempt = begin_publish_attempt(self.app.db, job_id, "manual")
                 remote_id = publish_job(self.app.db, claimed)
             except Exception as error:
-                complete_publish_job(self.app.db, job_id, "failed", error=str(error))
+                if attempt:
+                    complete_publish_attempt(self.app.db, attempt["id"], "failed", error=str(error))
+                else:
+                    complete_publish_job(self.app.db, job_id, "failed", error=str(error))
                 self.send_error_json(HTTPStatus.CONFLICT, str(error))
                 return
-            complete_publish_job(self.app.db, job_id, "published", remote_id=remote_id)
+            complete_publish_attempt(self.app.db, attempt["id"], "published", remote_id=remote_id)
             self.send_json({"job": publish_job_view(self.app.db.get("publish_jobs", "id", job_id) or {})})
             return
         match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/mark-published", path)

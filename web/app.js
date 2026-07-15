@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], automationRuns: [], selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -232,7 +232,16 @@ function renderPublisher() {
   renderPlatformReadiness();
   $("#account-list").innerHTML = state.accounts.length ? state.accounts.map((account) => { const tokenEnv = account.config?.token_env || "token not configured"; const detail = account.status === "connected" ? `token detected · ${tokenEnv}` : `set ${tokenEnv}`; return `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · ${escapeHtml(detail)}</small></div>${statusPill(account.status)}</div>`; }).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
-  $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => { const sourceCount = Number(job.payload?.provenance?.asset_ids?.length || 0); const provenance = sourceCount ? ` · ${sourceCount} credited source${sourceCount === 1 ? "" : "s"}` : ""; const processing = Boolean(job.processing); return `<div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : ""}</div>`; }).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
+  $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => {
+    const sourceCount = Number(job.payload?.provenance?.asset_ids?.length || 0);
+    const provenance = sourceCount ? ` · ${sourceCount} credited source${sourceCount === 1 ? "" : "s"}` : "";
+    const processing = Boolean(job.processing);
+    const attempts = state.publishAttempts[job.id];
+    const history = attempts ? `<div class="publish-history">${attempts.length ? attempts.map((attempt) => `<div class="attempt-row"><div class="row-main"><strong>Attempt ${escapeHtml(attempt.attempt_number)}</strong><small>${escapeHtml(attempt.trigger)} · ${escapeHtml(attempt.started_at)}${attempt.finished_at ? ` · finished ${escapeHtml(attempt.finished_at)}` : ""}${attempt.remote_id ? ` · ${escapeHtml(attempt.remote_id)}` : ""}${attempt.error ? ` · ${escapeHtml(attempt.error)}` : ""}</small></div>${statusPill(attempt.status)}</div>`).join("") : empty("No attempts yet", "This outbox row has not reached a publisher adapter.")}</div>` : "";
+    const historyButton = `<button class="row-action" data-publish-history="${job.id}">${attempts ? "Hide history" : "History"}</button>`;
+    const action = processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button><button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : "";
+    return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${action}</div>${history}</div>`;
+  }).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
 }
 
 function renderPlatformReadiness() {
@@ -424,7 +433,7 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -457,6 +466,7 @@ async function handleClick(event) {
     if (planProject) { await api(`/api/projects/${planProject}/plan`, { method: "POST", body: "{}" }); toast("Edit plan updated"); await refresh(); return; }
     if (renderProject) { const result = await api(`/api/projects/${renderProject}/render`, { method: "POST", body: "{}" }); toast(`Render queued: ${result.job.id}`); await refresh(); return; }
     if (publishProject) { state.publishDraft.projectId = publishProject; showView("publisher"); renderPublisher(); toast("Release selected"); return; }
+    if (publishHistory) { if (state.publishAttempts[publishHistory]) { delete state.publishAttempts[publishHistory]; } else { const result = await api(`/api/publishing/jobs/${publishHistory}/attempts`); state.publishAttempts[publishHistory] = result.attempts || []; } renderPublisher(); return; }
     if (runPublish) { await api(`/api/publishing/jobs/${runPublish}/publish`, { method: "POST", body: "{}" }); toast("Published successfully"); await refresh(); return; }
     if (markPublished) { await api(`/api/publishing/jobs/${markPublished}/mark-published`, { method: "POST", body: JSON.stringify({ remote_id: "manual" }) }); toast("Marked as posted"); await refresh(); return; }
   } catch (error) { toast(error.message, true); }

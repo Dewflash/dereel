@@ -15,7 +15,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
-from dereel.publisher import account_view, claim_publish_job, complete_publish_job, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
+from dereel.publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
 from dereel.config import Settings
 from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
 
@@ -37,13 +37,15 @@ class CoreModelTests(unittest.TestCase):
             with db.connection() as connection:
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
                 publish_columns = {row[1] for row in connection.execute("PRAGMA table_info(publish_jobs)").fetchall()}
+                attempt_columns = {row[1] for row in connection.execute("PRAGMA table_info(publish_attempts)").fetchall()}
                 schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
             self.assertIn("automation_id", columns)
             self.assertIn("retry_of", columns)
             self.assertIn("attempt", columns)
             self.assertIn("claim_token", publish_columns)
             self.assertIn("claimed_at", publish_columns)
-            self.assertEqual(schema_version, "7")
+            self.assertEqual(schema_version, "8")
+            self.assertIn("attempt_number", attempt_columns)
 
     def test_database_migrates_legacy_jobs_with_automation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -80,7 +82,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
             self.assertIn("idx_jobs_retry_of", index_names)
-            self.assertEqual(schema_version, "7")
+            self.assertEqual(schema_version, "8")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -447,6 +449,73 @@ class CoreModelTests(unittest.TestCase):
                         "payload_json": json.dumps({"media_path": str(Path(directory) / "missing.mp4")}),
                     },
                 )
+
+    def test_publish_attempt_history_is_numbered_and_recovered(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Attempt history", "theme": "history"})
+            job_id = "publish_attempt_history"
+            db.insert(
+                "publish_jobs",
+                {
+                    "id": job_id,
+                    "project_id": project["id"],
+                    "account_id": None,
+                    "platform": "youtube",
+                    "status": "ready",
+                    "scheduled_for": "",
+                    "remote_id": "",
+                    "error": "",
+                    "claim_token": None,
+                    "claimed_at": None,
+                    "payload_json": "{}",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
+            self.assertTrue(claim_publish_job(db, job_id))
+            first = begin_publish_attempt(db, job_id, "manual")
+            complete_publish_attempt(db, first["id"], "failed", error="Token unavailable")
+            self.assertTrue(claim_publish_job(db, job_id))
+            second = begin_publish_attempt(db, job_id, "scheduler")
+            recovered = recover_interrupted_jobs(db)
+            self.assertEqual(recovered, [])
+            attempts = list_publish_attempts(db, job_id)
+            self.assertEqual([(item["attempt_number"], item["trigger"], item["status"]) for item in attempts], [(2, "scheduler", "failed"), (1, "manual", "failed")])
+            self.assertEqual(attempts[0]["error"], "Interrupted by process restart")
+            stored_job = db.get("publish_jobs", "id", job_id)
+            self.assertEqual((stored_job["status"], stored_job["claim_token"]), ("failed", None))
+            with self.assertRaisesRegex(ValueError, "not running"):
+                complete_publish_attempt(db, second["id"], "failed", error="duplicate finalization")
+
+    def test_publish_attempt_completion_updates_job_atomically(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Atomic publish", "theme": "atomic"})
+            job_id = "publish_attempt_atomic"
+            db.insert(
+                "publish_jobs",
+                {
+                    "id": job_id,
+                    "project_id": project["id"],
+                    "account_id": None,
+                    "platform": "tiktok",
+                    "status": "ready",
+                    "scheduled_for": "",
+                    "remote_id": "",
+                    "error": "",
+                    "claim_token": None,
+                    "claimed_at": None,
+                    "payload_json": "{}",
+                    "created_at": "2026-01-01T00:00:00+00:00",
+                    "updated_at": "2026-01-01T00:00:00+00:00",
+                },
+            )
+            self.assertTrue(claim_publish_job(db, job_id))
+            attempt = begin_publish_attempt(db, job_id, "manual")
+            complete_publish_attempt(db, attempt["id"], "published", remote_id="draft:123")
+            self.assertEqual(list_publish_attempts(db, job_id)[0]["remote_id"], "draft:123")
+            self.assertEqual((db.get("publish_jobs", "id", job_id)["status"], db.get("publish_jobs", "id", job_id)["remote_id"]), ("published", "draft:123"))
 
     def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
         class FakeResponse:
