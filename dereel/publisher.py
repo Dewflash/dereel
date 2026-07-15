@@ -10,7 +10,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from .db import Database, json_dumps, new_id, now_iso
+from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import probe
 
 
@@ -67,6 +67,20 @@ def validate_export(path: Path, platform: str) -> list[str]:
     return problems
 
 
+def publish_provenance(project: dict[str, Any], output_dir: Path) -> dict[str, Any]:
+    manifest = project.get("manifest") if isinstance(project.get("manifest"), dict) else json_loads(project.get("manifest_json"), {})
+    inputs = list(manifest.get("inputs") or [])
+    tracks = list((manifest.get("audio") or {}).get("tracks") or [])
+    asset_ids = list(dict.fromkeys([str(item["asset_id"]) for item in [*inputs, *tracks] if item.get("asset_id")]))
+    return {
+        "asset_ids": asset_ids,
+        "source_count": len(inputs),
+        "audio_count": len(tracks),
+        "manifest_path": str(output_dir / "render-manifest.json"),
+        "credits_path": str(output_dir / "credits.json"),
+    }
+
+
 def create_publish_jobs(
     db: Database,
     project: dict[str, Any],
@@ -119,6 +133,7 @@ def create_publish_jobs(
             "requires_public_url": PLATFORM_SPECS[platform]["requires_public_url"],
             "state": "awaiting_account_connection",
             "privacy_status": "private",
+            "provenance": publish_provenance(project, output_dir),
         }
         db.insert(
             "publish_jobs",
