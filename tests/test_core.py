@@ -1884,6 +1884,29 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(list_publish_attempts(db, job_id)[0]["remote_id"], "draft:123")
             self.assertEqual((db.get("publish_jobs", "id", job_id)["status"], db.get("publish_jobs", "id", job_id)["remote_id"]), ("published", "draft:123"))
 
+    def test_watch_import_rejects_source_changes_during_copy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watch_dir = root / "watch"
+            watch_dir.mkdir()
+            source = watch_dir / "changing.mp4"
+            source.write_bytes(b"source")
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Changing source", "watch_dir": str(watch_dir)})
+
+            def changed_copy(_source: Path, destination: Path, **_kwargs: Any) -> int:
+                destination.write_bytes(b"replacement")
+                return destination.stat().st_size
+
+            metadata = {"duration": 2, "file_size": 6, "width": 720, "height": 1280, "has_audio": False}
+            with patch("dereel.automation.validate_video", return_value=metadata), patch("dereel.automation.atomic_copy_file", side_effect=changed_copy):
+                result = scan_watch_folder(db, automation, root / "library")
+            self.assertEqual(len(result["errors"]), 1)
+            self.assertIn("changed during import", result["errors"][0]["error"])
+            with db.connection() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM assets").fetchone()[0], 0)
+            self.assertFalse(list((root / "library").glob("*")))
+
     def test_youtube_upload_sends_resumable_byte_range(self) -> None:
         class FakeResponse:
             def __init__(self, body=b"{}", headers=None):

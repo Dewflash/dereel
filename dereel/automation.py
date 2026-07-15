@@ -363,7 +363,10 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
             content_type = mimetypes.guess_type(source.name)[0] or "video/mp4"
             destination = originals_dir / f"{asset_id}{safe_extension(source.name, content_type)}"
             atomic_copy_file(source, destination, max_bytes=MAX_WATCH_BYTES)
-            metadata["fingerprint"] = fingerprint
+            copied_fingerprint = sha256_file(destination)
+            if copied_fingerprint != fingerprint:
+                raise ValueError("Source changed during import; retry the watch-folder scan")
+            metadata["fingerprint"] = copied_fingerprint
             metadata["watch_source"] = str(source)
             requested_rights = automation["default_rights"]
             asset = create_asset(
