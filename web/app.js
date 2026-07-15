@@ -361,8 +361,18 @@ function renderInspector(project) {
 }
 
 function renderOutputs() {
-  const ready = state.projects.filter((project) => project.status === "ready" && project.output_dir);
-  $("#output-list").innerHTML = ready.length ? ready.map((project) => { const validation = project.manifest?.validation || {}; const validationStatus = validation.status || "unverified"; const outputCount = Object.keys(validation.outputs || {}).length; const validateLabel = validationStatus === "passed" ? "Revalidate package" : "Validate package"; const validateAction = `<button class="button secondary" data-validate-output="${project.id}">${validateLabel}</button>`; return `<article class="output-card"><div class="output-video"><video controls preload="metadata" src="/api/projects/${project.id}/output/final.mp4"></video></div><div class="output-info"><div class="output-status"><span class="eyebrow accent">${escapeHtml(project.style)} / 9:16</span>${statusPill(validationStatus)}</div><h3>${escapeHtml(project.title || project.name)}</h3><p>${escapeHtml(project.caption || project.theme)}</p><div class="output-files"><span class="file-chip">final.mp4</span><span class="file-chip">captions.srt</span><span class="file-chip">youtube.mp4</span><span class="file-chip">instagram.mp4</span><span class="file-chip">tiktok.mp4</span></div><p class="output-health">${outputCount ? `${outputCount} outputs validated` : "Output validation predates this check"}</p><div class="output-actions">${validateAction}<button class="button primary" data-publish-project="${project.id}">↗ Prepare publish</button><button class="button secondary" data-copy-path="${escapeHtml(project.output_dir)}">Copy package path</button></div></div></article>`; }).join("") : empty("No rendered outputs", "Your first finished edit will appear here.");
+  const outputs = state.projects.filter((project) => ["ready", "failed"].includes(project.status) && project.output_dir);
+  $("#output-list").innerHTML = outputs.length ? outputs.map((project) => {
+    const validation = project.manifest?.validation || {};
+    const validationStatus = validation.status || "unverified";
+    const outputCount = Object.keys(validation.outputs || {}).length;
+    const validateLabel = validationStatus === "passed" ? "Revalidate package" : "Validate package";
+    const validateAction = `<button class="button secondary" data-validate-output="${project.id}">${validateLabel}</button>`;
+    const repairAction = project.status === "failed" ? `<button class="button secondary" data-project="${project.id}">Open in Forge</button>` : "";
+    const canPublish = project.status === "ready" && validationStatus !== "failed";
+    const publishAction = canPublish ? `<button class="button primary" data-publish-project="${project.id}">↗ Prepare publish</button>` : "";
+    return `<article class="output-card"><div class="output-video"><video controls preload="metadata" src="/api/projects/${project.id}/output/final.mp4"></video></div><div class="output-info"><div class="output-status"><span class="eyebrow accent">${escapeHtml(project.style)} / 9:16</span>${statusPill(validationStatus)}</div><h3>${escapeHtml(project.title || project.name)}</h3><p>${escapeHtml(project.caption || project.theme)}</p><div class="output-files"><span class="file-chip">final.mp4</span><span class="file-chip">captions.srt</span><span class="file-chip">youtube.mp4</span><span class="file-chip">instagram.mp4</span><span class="file-chip">tiktok.mp4</span></div><p class="output-health">${outputCount ? `${outputCount} outputs validated` : "Output validation predates this check"}</p><div class="output-actions">${validateAction}${repairAction}${publishAction}<button class="button secondary" data-copy-path="${escapeHtml(project.output_dir)}">Copy package path</button></div></div></article>`;
+  }).join("") : empty("No rendered outputs", "Your first finished edit will appear here.");
 }
 
 function renderPublishAccountPickers() {
