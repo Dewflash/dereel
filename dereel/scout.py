@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -18,6 +19,7 @@ PROVIDER_HOSTS = {
     "pexels": {"videos.pexels.com", "images.pexels.com"},
     "pixabay": {"cdn.pixabay.com"},
 }
+PROVIDER_RETRY_LIMIT = 2
 
 
 def configured_providers() -> list[dict[str, Any]]:
@@ -29,14 +31,31 @@ def configured_providers() -> list[dict[str, Any]]:
 
 def _request_json(url: str, headers: dict[str, str] | None = None) -> dict[str, Any]:
     request = urllib.request.Request(url, headers={"User-Agent": "DeReel/0.1", **(headers or {})})
-    try:
-        with urllib.request.urlopen(request, timeout=25) as response:
-            payload = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        detail = error.read().decode("utf-8", "replace")[:300]
-        raise RuntimeError(f"Provider returned HTTP {error.code}: {detail}") from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"Provider request failed: {error.reason}") from error
+    retries = 0
+    while True:
+        try:
+            with urllib.request.urlopen(request, timeout=25) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+            break
+        except urllib.error.HTTPError as error:
+            if (error.code == 429 or 500 <= error.code <= 599) and retries < PROVIDER_RETRY_LIMIT:
+                retry_after = str(error.headers.get("Retry-After") or "").strip()
+                try:
+                    delay = min(max(float(retry_after), 0.0), 20.0) if retry_after else min(2.0 ** retries, 4.0)
+                except ValueError:
+                    delay = min(2.0 ** retries, 4.0)
+                retries += 1
+                error.close()
+                time.sleep(delay)
+                continue
+            detail = error.read().decode("utf-8", "replace")[:300]
+            raise RuntimeError(f"Provider returned HTTP {error.code}: {detail}") from error
+        except urllib.error.URLError as error:
+            if retries < PROVIDER_RETRY_LIMIT:
+                retries += 1
+                time.sleep(min(2.0 ** (retries - 1), 4.0))
+                continue
+            raise RuntimeError(f"Provider request failed: {error.reason}") from error
     if not isinstance(payload, dict):
         raise RuntimeError("Provider returned an invalid response")
     return payload

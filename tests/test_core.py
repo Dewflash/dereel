@@ -16,7 +16,7 @@ from urllib.parse import parse_qs
 from dereel.db import Database
 from dereel.media import add_text_overlay, atomic_write_stream, sha256_file, text_overlay_backend, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, cleanup_pending_asset, create_asset, create_job, create_project, delete_asset, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
-from dereel.scout import _host_allowed, import_provider_asset, import_provider_assets
+from dereel.scout import _host_allowed, _request_json, import_provider_asset, import_provider_assets
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
@@ -1157,6 +1157,34 @@ class CoreModelTests(unittest.TestCase):
         self.assertTrue(_host_allowed("pixabay", "https://cdn.pixabay.com/video.mp4"))
         self.assertFalse(_host_allowed("pexels", "https://example.com/video.mp4"))
         self.assertFalse(_host_allowed("pexels", "http://videos.pexels.com/video.mp4"))
+
+    def test_provider_search_retries_transient_http_failures(self) -> None:
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return b'{"videos":[]}'
+
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request, timeout))
+            if len(calls) < 3:
+                return_value = urllib_error.HTTPError(request.full_url, 503, "busy", {}, io.BytesIO(b"busy"))
+                raise return_value
+            return FakeResponse()
+
+        with patch("dereel.scout.urllib.request.urlopen", side_effect=fake_urlopen):
+            with patch("dereel.scout.time.sleep") as sleep:
+                payload = _request_json("https://api.example/search")
+
+        self.assertEqual(payload, {"videos": []})
+        self.assertEqual(len(calls), 3)
+        self.assertEqual(sleep.call_count, 2)
 
     def test_provider_import_skips_existing_source_before_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
