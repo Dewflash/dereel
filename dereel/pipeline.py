@@ -249,11 +249,11 @@ def _ensure_project_editable(connection: Any, project_id: str) -> dict[str, Any]
     if project["status"] in {"planning", "rendering"}:
         raise ValueError("Project cannot be edited while it is processing")
     pending_publish = connection.execute(
-        "SELECT id FROM publish_jobs WHERE project_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+        "SELECT id FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL AND (status IN ('queued', 'ready', 'failed') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
         (project_id,),
     ).fetchone()
     if pending_publish:
-        raise ValueError("Project cannot be edited while it has a pending publish job")
+        raise ValueError("Project cannot be edited while it has a pending publish job or unresolved failed publish job")
     return dict(project)
 
 
@@ -1137,11 +1137,11 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         raise KeyError("Project not found")
     with db.connection() as connection:
         pending_publish = connection.execute(
-            "SELECT id FROM publish_jobs WHERE project_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+            "SELECT id FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL AND (status IN ('queued', 'ready', 'failed') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
             (project_id,),
         ).fetchone()
     if pending_publish:
-        raise ValueError("Project cannot be rendered while it has a pending publish job")
+        raise ValueError("Project cannot be rendered while it has a pending publish job or unresolved failed publish job")
     project_assets = get_project_assets(db, project_id)
     enabled = [item for item in project_assets if item["enabled"]]
     if not enabled:

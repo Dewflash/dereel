@@ -411,11 +411,11 @@ class AppState:
             if project["status"] in {"planning", "rendering"}:
                 raise ValueError("Project is already processing")
             pending_publish = connection.execute(
-                "SELECT id FROM publish_jobs WHERE project_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
+                "SELECT id FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL AND (status IN ('queued', 'ready', 'failed') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
                 (project_id,),
             ).fetchone()
             if pending_publish:
-                raise ValueError("Project cannot be rendered while it has a pending publish job")
+                raise ValueError("Project cannot be rendered while it has a pending publish job or unresolved failed publish job")
             active = connection.execute(
                 "SELECT id FROM jobs WHERE kind = 'render' AND project_id = ? AND status IN ('queued', 'running') LIMIT 1",
                 (project_id,),

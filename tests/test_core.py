@@ -840,6 +840,11 @@ class CoreModelTests(unittest.TestCase):
                 app.queue_render(project["id"])
             with self.assertRaisesRegex(ValueError, "pending publish job"):
                 render_project(app.db, project["id"], root / "outputs", lambda _progress, _message: None)
+            app.db.update("publish_jobs", "id", "pending_render_lock", {"status": "failed", "error": "Upload failed"})
+            with self.assertRaisesRegex(ValueError, "unresolved failed publish job"):
+                app.queue_render(project["id"])
+            with self.assertRaisesRegex(ValueError, "unresolved failed publish job"):
+                render_project(app.db, project["id"], root / "outputs", lambda _progress, _message: None)
 
     def test_planning_failure_marks_project_retryable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1060,7 +1065,10 @@ class CoreModelTests(unittest.TestCase):
                 update_project(db, project["id"], {"name": "Changed"})
             with self.assertRaisesRegex(ValueError, "pending publish job"):
                 plan_project(db, project["id"])
-            db.update("publish_jobs", "id", "publish_lock", {"status": "failed", "cancelled_at": "2026-01-01T00:00:00+00:00"})
+            db.update("publish_jobs", "id", "publish_lock", {"status": "failed", "error": "Upload failed"})
+            with self.assertRaisesRegex(ValueError, "unresolved failed publish job"):
+                update_project(db, project["id"], {"name": "Changed while failed"})
+            db.update("publish_jobs", "id", "publish_lock", {"cancelled_at": "2026-01-01T00:00:00+00:00"})
             changed = update_project(db, project["id"], {"name": "Changed"})
             self.assertEqual(changed["name"], "Changed")
 
