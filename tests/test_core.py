@@ -232,10 +232,31 @@ class CoreModelTests(unittest.TestCase):
             history = list_asset_reviews(db, asset["id"])
             self.assertEqual((history[0]["action"], history[0]["previous_rights_status"], history[0]["note"]), ("approve_owned", "pending_review", "Automation attestation: owned distribution"))
 
+    def test_production_gate_rejects_uncleared_and_flagged_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            pending_path = root / "pending.mp4"
+            pending_path.write_bytes(b"pending")
+            pending = create_asset(db, kind="media", title="Pending", local_path=str(pending_path), rights_status="pending_review", metadata={"duration": 4, "width": 720, "height": 1280})
+            project = create_project(db, {"name": "Gate", "theme": "funny"})
+            with self.assertRaisesRegex(ValueError, "not cleared"):
+                add_project_asset(db, project["id"], pending["id"], {})
+            changed_path = root / "changed.mp4"
+            changed_path.write_bytes(b"changed")
+            changed = create_asset(db, kind="media", title="Changed", local_path=str(changed_path), rights_status="owned_distribution", metadata={"duration": 4, "width": 720, "height": 1280})
+            db.update("assets", "id", changed["id"], {"analysis_json": json.dumps({"health": {"status": "changed", "checked_at": "2026-01-01T00:00:00+00:00"}})})
+            with self.assertRaisesRegex(ValueError, "changed since import"):
+                add_project_asset(db, project["id"], changed["id"], {})
+            planned = plan_project(db, project["id"])
+            self.assertEqual(planned["assets"], [])
+
     def test_automation_audio_controls_persist_and_feed_new_projects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db = Database(root / "test.sqlite3")
+            for name in ("music.m4a", "effect.m4a", "voiceover.m4a"):
+                (root / name).write_bytes(b"audio")
             music = create_asset(db, kind="media", title="Music", local_path=str(root / "music.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "has_audio": True})
             effect = create_asset(db, kind="media", title="SFX", local_path=str(root / "effect.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 1, "has_audio": True})
             voiceover = create_asset(db, kind="media", title="Voiceover", local_path=str(root / "voiceover.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "has_audio": True})
@@ -439,6 +460,7 @@ class CoreModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db = Database(root / "test.sqlite3")
+            (root / "source.mp4").write_bytes(b"source")
             asset = create_asset(db, kind="media", title="Shared source", local_path=str(root / "source.mp4"), rights_status="owned_distribution", metadata={"duration": 4, "width": 720, "height": 1280})
             project = create_project(db, {"name": "Disposable", "theme": "cleanup"})
             add_project_asset(db, project["id"], asset["id"], {})
@@ -458,6 +480,8 @@ class CoreModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db = Database(root / "test.sqlite3")
+            for index in range(3):
+                (root / f"clip-{index}.mp4").write_bytes(b"source")
             project = create_project(db, {"name": "Ordered cut", "theme": "sequence"})
             assets = [
                 create_asset(
@@ -730,8 +754,11 @@ class CoreModelTests(unittest.TestCase):
 
     def test_planner_never_selects_audio_assets_as_clips(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "test.sqlite3")
-            video = create_asset(db, kind="media", title="Funny video", local_path="/tmp/video.mp4", mime_type="video/mp4", tags=["funny"], rights_status="owned_distribution", metadata={"duration": 5, "width": 720, "height": 1280})
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            video_path = root / "video.mp4"
+            video_path.write_bytes(b"video")
+            video = create_asset(db, kind="media", title="Funny video", local_path=str(video_path), mime_type="video/mp4", tags=["funny"], rights_status="owned_distribution", metadata={"duration": 5, "width": 720, "height": 1280})
             create_asset(db, kind="media", title="Funny music", local_path="/tmp/music.m4a", mime_type="audio/mp4", tags=["funny", "music"], rights_status="owned_distribution", metadata={"duration": 10, "has_audio": True})
             project = create_project(db, {"name": "Planner check", "theme": "funny music", "duration_target": 5})
             planned = plan_project(db, project["id"])

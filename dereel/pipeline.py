@@ -75,6 +75,17 @@ def asset_health(row: dict[str, Any]) -> dict[str, Any]:
     return {"status": "unchecked", "problems": [], "checked_at": ""}
 
 
+def production_health_error(row: dict[str, Any]) -> str:
+    status = str(asset_health(row).get("status") or "")
+    if status == "missing":
+        return "media file is missing"
+    if status == "invalid":
+        return "media failed its health check"
+    if status == "changed":
+        return "media file changed since import"
+    return ""
+
+
 def asset_view(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["tags"] = json_loads(result.pop("tags_json", "[]"), [])
@@ -91,7 +102,7 @@ def get_project_audio(db: Database, project_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
             SELECT pa.project_id, pa.asset_id, pa.role, pa.volume, pa.start_time,
-                   a.title, a.local_path, a.mime_type, a.duration, a.rights_status, a.status,
+                   a.title, a.local_path, a.mime_type, a.duration, a.rights_status, a.status, a.analysis_json,
                    a.kind, a.source_url, a.platform, a.automation_id, a.fingerprint, a.created_at
             FROM project_audio pa JOIN assets a ON a.id = pa.asset_id
             WHERE pa.project_id = ? ORDER BY pa.role, pa.start_time, pa.asset_id
@@ -115,7 +126,7 @@ def get_project_assets(db: Database, project_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
             SELECT pa.*, a.title, a.local_path, a.rights_status, a.duration, a.width, a.height, a.tags_json,
-                   a.kind, a.source_url, a.platform, a.automation_id, a.fingerprint, a.created_at
+                   a.kind, a.source_url, a.platform, a.automation_id, a.fingerprint, a.status, a.analysis_json, a.created_at
             FROM project_assets pa JOIN assets a ON a.id = pa.asset_id
             WHERE pa.project_id = ? ORDER BY pa.order_index
             """,
@@ -154,6 +165,11 @@ def add_project_asset(db: Database, project_id: str, asset_id: str, payload: dic
             raise KeyError("Asset not found")
         if asset["kind"] != "media" or not asset["local_path"] or str(asset["mime_type"] or "").startswith("audio/"):
             raise ValueError("Only local video media can be added to the timeline")
+        if asset["rights_status"] not in PRODUCTION_RIGHTS or asset["status"] not in {"ready", "approved"}:
+            raise ValueError("Asset is not cleared for production")
+        health_error = production_health_error(dict(asset))
+        if health_error:
+            raise ValueError(f"Asset is not ready for production: {health_error}")
         duration = float(asset["duration"] or 0)
         in_point = max(0.0, float(payload.get("in_point") or 0))
         out_point_value = payload.get("out_point")
@@ -716,7 +732,7 @@ def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None 
                 "SELECT * FROM assets WHERE local_path IS NOT NULL AND (mime_type IS NULL OR mime_type NOT LIKE 'audio/%') AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved')" + candidate_filter + " ORDER BY created_at DESC",
                 candidate_params,
             ).fetchall()
-    candidates = [{"asset": dict(row), "breakdown": score_breakdown(dict(row), theme_tokens)} for row in rows]
+    candidates = [{"asset": dict(row), "breakdown": score_breakdown(dict(row), theme_tokens)} for row in rows if not production_health_error(dict(row))]
     candidates.sort(key=lambda item: item["breakdown"]["total"], reverse=True)
     selected: list[dict[str, Any]] = []
     total = 0.0
@@ -848,8 +864,11 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
     if not enabled:
         raise ValueError("Add or plan at least one production-ready video before rendering")
     for item in enabled:
-        if item["rights_status"] not in PRODUCTION_RIGHTS or not item["local_path"]:
+        if item["rights_status"] not in PRODUCTION_RIGHTS or item.get("status") not in {"ready", "approved"} or not item["local_path"]:
             raise ValueError(f"Asset '{item['title']}' is not cleared for production")
+        health_error = production_health_error(item)
+        if health_error:
+            raise ValueError(f"Asset '{item['title']}' is not ready for production: {health_error}")
         validate_video(Path(item["local_path"]))
 
     output_root.mkdir(parents=True, exist_ok=True)
@@ -900,6 +919,9 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             for track in audio_tracks:
                 if track.get("rights_status") not in PRODUCTION_RIGHTS or track.get("status") not in {"ready", "approved"} or not track.get("local_path") or not str(track.get("mime_type") or "").startswith("audio/"):
                     raise ValueError(f"Selected audio '{track.get('title') or track.get('asset_id')}' is not cleared for production")
+                health_error = production_health_error(track)
+                if health_error:
+                    raise ValueError(f"Selected audio '{track.get('title') or track.get('asset_id')}' is not ready for production: {health_error}")
                 audio_source = Path(track["local_path"])
                 validate_audio(audio_source)
                 volume = _bounded_float(track.get("volume"), 0.16, 0.0, 1.0)

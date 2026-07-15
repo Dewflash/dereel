@@ -164,7 +164,8 @@ function assetCard(asset) {
   const selector = isReviewableAsset(asset) ? `<label class="asset-select" title="Select for batch review"><input type="checkbox" data-asset-select="${asset.id}" ${state.selectedAssets.has(asset.id) ? "checked" : ""} /></label>` : "";
   const tags = (asset.tags || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
   const canApprove = isReviewableAsset(asset);
-  const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status);
+  const healthBlocked = ["missing", "invalid", "changed"].includes(asset.health?.status);
+  const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status) && !healthBlocked;
   const providerImport = ["pexels", "pixabay"].includes(String(asset.platform || "").toLowerCase());
   const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
   const sourceAction = /^https?:\/\//i.test(asset.source_url || "") ? `<a class="mini-button mini-link" href="${escapeHtml(asset.source_url)}" target="_blank" rel="noreferrer">Open source</a>` : "";

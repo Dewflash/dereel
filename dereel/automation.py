@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import VIDEO_EXTENSIONS, safe_extension, sha256_file, validate_video
-from .pipeline import PRODUCTION_RIGHTS, create_asset, create_project, plan_project, render_project, review_asset
+from .pipeline import PRODUCTION_RIGHTS, create_asset, create_project, plan_project, production_health_error, render_project, review_asset
 from .publisher import create_publish_jobs
 from .scout import import_provider_asset, search as search_provider
 
@@ -141,6 +141,9 @@ def _validate_audio_asset(db: Database, asset_id: str, role: str) -> None:
         raise ValueError(f"Automation {role} is not a valid audio asset")
     if asset.get("rights_status") not in PRODUCTION_RIGHTS or asset.get("status") not in {"ready", "approved"}:
         raise ValueError(f"Automation {role} is not cleared for production")
+    health_error = production_health_error(asset)
+    if health_error:
+        raise ValueError(f"Automation {role} is not ready for production: {health_error}")
 
 
 def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str, Any] | None = None) -> dict[str, Any]:
