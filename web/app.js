@@ -1,5 +1,6 @@
 const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
 let refreshInFlight = null;
+let refreshQueued = false;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -48,8 +49,16 @@ function showView(view) {
 }
 
 async function refresh() {
-  if (refreshInFlight) return refreshInFlight;
-  refreshInFlight = refreshWorkspace();
+  if (refreshInFlight) {
+    refreshQueued = true;
+    return refreshInFlight;
+  }
+  refreshInFlight = (async () => {
+    do {
+      refreshQueued = false;
+      await refreshWorkspace();
+    } while (refreshQueued);
+  })();
   try {
     return await refreshInFlight;
   } finally {
