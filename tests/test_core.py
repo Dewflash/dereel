@@ -1613,6 +1613,13 @@ class CoreModelTests(unittest.TestCase):
             db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(replacement_dir)})
             with self.assertRaisesRegex(ValueError, "not from the current project output"):
                 publish_job(db, db.get("publish_jobs", "id", job["id"]) or job)
+            db.update("projects", "id", project["id"], {"output_dir": str(output_dir)})
+            mismatched = db.get("publish_jobs", "id", job["id"]) or job
+            payload = json.loads(mismatched["payload_json"])
+            payload["media_path"] = str(output_dir / "instagram.mp4")
+            mismatched["payload_json"] = json.dumps(payload)
+            with self.assertRaisesRegex(ValueError, "not from the current project output"):
+                publish_job(db, mismatched)
 
     def test_multi_platform_publish_preparation_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

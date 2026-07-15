@@ -982,7 +982,8 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
     export_path = Path(payload.get("media_path") or "")
     if db is not None and job.get("project_id"):
         project_output_dir = Path(str(project.get("output_dir") or "")).resolve()
-        if not project_output_dir.is_dir() or export_path.resolve().parent != project_output_dir:
+        expected_export = project_output_dir / f"{str(job.get('platform') or '').strip().lower()}.mp4"
+        if not project_output_dir.is_dir() or export_path.resolve() != expected_export:
             raise ValueError("Publish export is not from the current project output")
     problems = validate_export(export_path, str(job.get("platform") or ""))
     if problems:
