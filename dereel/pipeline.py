@@ -139,12 +139,16 @@ def review_flags(row: dict[str, Any]) -> list[str]:
 def asset_health(row: dict[str, Any]) -> dict[str, Any]:
     analysis = row.get("analysis") if isinstance(row.get("analysis"), dict) else json_loads(row.get("analysis_json"), {})
     stored = analysis.get("health") if isinstance(analysis, dict) else None
-    if isinstance(stored, dict):
-        return stored
     if row.get("kind") == "reference":
         return {"status": "reference", "problems": [], "checked_at": ""}
     if not row.get("local_path") or not Path(str(row.get("local_path"))).is_file():
-        return {"status": "missing", "problems": ["Media file is missing"], "checked_at": ""}
+        return {
+            "status": "missing",
+            "problems": ["Media file is missing"],
+            "checked_at": str(stored.get("checked_at") or "") if isinstance(stored, dict) else "",
+        }
+    if isinstance(stored, dict):
+        return stored
     return {"status": "unchecked", "problems": [], "checked_at": ""}
 
 

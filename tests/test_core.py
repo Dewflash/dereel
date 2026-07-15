@@ -352,6 +352,9 @@ class CoreModelTests(unittest.TestCase):
             with patch("dereel.pipeline.validate_video", return_value={"duration": 2, "file_size": 8, "width": 720, "height": 1280, "has_audio": False}):
                 baseline_checked = check_asset_health(db, baseline["id"])
             self.assertEqual(db.get("assets", "id", baseline["id"])["fingerprint"], baseline_checked["health"]["fingerprint"])
+            baseline_path.unlink()
+            refreshed = asset_view(db.get("assets", "id", baseline["id"]) or {})
+            self.assertEqual(refreshed["health"]["status"], "missing")
             changed_path = root / "changed.mp4"
             changed_path.write_bytes(b"changed")
             changed = create_asset(db, kind="media", title="Changed", local_path=str(changed_path), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280, "fingerprint": "before"})
