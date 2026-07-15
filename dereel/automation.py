@@ -385,7 +385,10 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
                     destination.unlink(missing_ok=True)
                 except OSError:
                     pass
-            errors.append({"file": source.name, "error": str(error)[:300]})
+            if "matches existing asset" in str(error):
+                duplicates.append(source.name)
+            else:
+                errors.append({"file": source.name, "error": str(error)[:300]})
     return {"found": len(files), "imported": imported, "duplicates": duplicates, "errors": errors}
 
 

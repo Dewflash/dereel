@@ -385,6 +385,22 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
 
+    def test_watch_duplicate_race_is_reported_as_duplicate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watch_dir = root / "watch"
+            watch_dir.mkdir()
+            source = watch_dir / "cat.mp4"
+            source.write_bytes(b"video")
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Cats", "watch_dir": str(watch_dir)})
+            metadata = {"duration": 2, "file_size": source.stat().st_size, "width": 720, "height": 1280, "has_audio": False}
+            with patch("dereel.automation.validate_video", return_value=metadata), patch("dereel.automation.sha256_file", return_value="same"), patch("dereel.automation.create_asset", side_effect=ValueError("Media matches existing asset 'Existing' (asset_1)")):
+                result = scan_watch_folder(db, automation, root / "library")
+            self.assertEqual(result["duplicates"], [source.name])
+            self.assertEqual(result["errors"], [])
+            self.assertEqual(list((root / "library").iterdir()), [])
+
     def test_scheduler_recovers_after_transient_database_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
