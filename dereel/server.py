@@ -31,6 +31,7 @@ from .automation import (
 )
 from .media import available_filters, safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
+    add_project_asset,
     analyze_asset,
     asset_view,
     bulk_review_assets,
@@ -39,6 +40,7 @@ from .pipeline import (
     create_project,
     get_project_assets,
     list_assets,
+    move_project_asset,
     plan_project,
     retry_failed_job,
     project_view,
@@ -584,15 +586,12 @@ class Handler(BaseHTTPRequestHandler):
             project_id = match.group(1)
             payload = self.read_json()
             asset_id = str(payload.get("asset_id") or "")
-            asset = self.app.db.get("assets", "id", asset_id)
-            if not asset:
-                raise KeyError("Asset not found")
-            if str(asset.get("mime_type") or "").startswith("audio/"):
-                raise ValueError("Audio assets belong in a music bed, not the video timeline")
-            with self.app.db.connection() as connection:
-                order = connection.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM project_assets WHERE project_id = ?", (project_id,)).fetchone()[0]
-                connection.execute("INSERT OR REPLACE INTO project_assets(project_id, asset_id, order_index, in_point, out_point, note, enabled, selected_by) VALUES (?, ?, ?, ?, ?, ?, 1, 'manual')", (project_id, asset_id, order, float(payload.get("in_point") or 0), payload.get("out_point"), str(payload.get("note") or "")))
-            self.send_json({"project": project_view(self.app.db, self.app.db.get("projects", "id", project_id) or {})})
+            self.send_json({"project": add_project_asset(self.app.db, project_id, asset_id, payload)})
+            return
+        match = re.fullmatch(r"/api/projects/([^/]+)/assets/([^/]+)/move", path)
+        if match:
+            payload = self.read_json()
+            self.send_json({"clip": move_project_asset(self.app.db, match.group(1), match.group(2), str(payload.get("direction") or ""))})
             return
         match = re.fullmatch(r"/api/projects/([^/]+)/assets/([^/]+)", path)
         if match:

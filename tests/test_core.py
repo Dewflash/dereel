@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, get_project_assets, move_project_asset, plan_project, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
@@ -325,6 +325,33 @@ class CoreModelTests(unittest.TestCase):
             db = Database(Path(directory) / "test.sqlite3")
             project = create_project(db, {"name": "No treatment", "theme": "quiet", "add_title_card": "false", "write_captions": 0})
             self.assertEqual((project["settings"]["add_title_card"], project["settings"]["write_captions"]), (False, False))
+
+    def test_timeline_moves_clips_and_marks_ready_projects_dirty(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Ordered cut", "theme": "sequence"})
+            assets = [
+                create_asset(
+                    db,
+                    kind="media",
+                    title=f"Clip {index}",
+                    local_path=str(root / f"clip-{index}.mp4"),
+                    rights_status="owned_distribution",
+                    metadata={"duration": 4, "width": 720, "height": 1280},
+                )
+                for index in range(3)
+            ]
+            for asset in assets:
+                add_project_asset(db, project["id"], asset["id"], {})
+            db.update("projects", "id", project["id"], {"status": "ready"})
+            move_project_asset(db, project["id"], assets[2]["id"], "up")
+            self.assertEqual([item["asset_id"] for item in get_project_assets(db, project["id"])], [assets[0]["id"], assets[2]["id"], assets[1]["id"]])
+            self.assertEqual(db.get("projects", "id", project["id"])["status"], "draft")
+            update_project_asset(db, project["id"], assets[0]["id"], {"in_point": 0.5, "out_point": 3.5})
+            self.assertEqual(db.get("projects", "id", project["id"])["status"], "draft")
+            move_project_asset(db, project["id"], assets[0]["id"], "up")
+            self.assertEqual([item["asset_id"] for item in get_project_assets(db, project["id"])], [assets[0]["id"], assets[2]["id"], assets[1]["id"]])
 
     def test_score_prefers_theme_matches_and_short_clips(self) -> None:
         matching = {"title": "cat surprise", "tags_json": '["cats","funny"]', "duration": 6, "width": 1080, "height": 1920, "has_audio": 1}

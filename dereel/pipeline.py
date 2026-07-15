@@ -105,8 +105,48 @@ def get_project_assets(db: Database, project_id: str) -> list[dict[str, Any]]:
     return result
 
 
+def _ensure_project_editable(connection: Any, project_id: str) -> dict[str, Any]:
+    project = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
+    if not project:
+        raise KeyError("Project not found")
+    if project["status"] in {"planning", "rendering"}:
+        raise ValueError("Project cannot be edited while it is processing")
+    return dict(project)
+
+
+def _mark_project_dirty(connection: Any, project_id: str) -> None:
+    connection.execute(
+        "UPDATE projects SET status = 'draft', updated_at = ? WHERE id = ? AND status = 'ready'",
+        (now_iso(), project_id),
+    )
+
+
+def add_project_asset(db: Database, project_id: str, asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    with db.connection() as connection:
+        _ensure_project_editable(connection, project_id)
+        asset = connection.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if not asset:
+            raise KeyError("Asset not found")
+        if asset["kind"] != "media" or not asset["local_path"] or str(asset["mime_type"] or "").startswith("audio/"):
+            raise ValueError("Only local video media can be added to the timeline")
+        duration = float(asset["duration"] or 0)
+        in_point = max(0.0, float(payload.get("in_point") or 0))
+        out_point_value = payload.get("out_point")
+        out_point = duration if out_point_value in (None, "") else float(out_point_value)
+        if duration <= 0 or in_point >= out_point or out_point > duration + 0.01:
+            raise ValueError("Clip trim points must be inside the source duration")
+        order = connection.execute("SELECT COALESCE(MAX(order_index), -1) + 1 FROM project_assets WHERE project_id = ?", (project_id,)).fetchone()[0]
+        connection.execute(
+            "INSERT OR REPLACE INTO project_assets(project_id, asset_id, order_index, in_point, out_point, note, enabled, selected_by) VALUES (?, ?, ?, ?, ?, ?, 1, 'manual')",
+            (project_id, asset_id, order, in_point, out_point, str(payload.get("note") or "")[:240]),
+        )
+        _mark_project_dirty(connection, project_id)
+    return project_view(db, db.get("projects", "id", project_id) or {})
+
+
 def update_project_asset(db: Database, project_id: str, asset_id: str, payload: dict[str, Any]) -> dict[str, Any]:
     with db.connection() as connection:
+        _ensure_project_editable(connection, project_id)
         row = connection.execute(
             "SELECT pa.*, a.duration FROM project_assets pa JOIN assets a ON a.id = pa.asset_id WHERE pa.project_id = ? AND pa.asset_id = ?",
             (project_id, asset_id),
@@ -129,6 +169,36 @@ def update_project_asset(db: Database, project_id: str, asset_id: str, payload: 
             "UPDATE project_assets SET in_point = ?, out_point = ?, enabled = ?, order_index = ?, note = ? WHERE project_id = ? AND asset_id = ?",
             (in_point, out_point, enabled, order_index, note, project_id, asset_id),
         )
+        _mark_project_dirty(connection, project_id)
+    return next(item for item in get_project_assets(db, project_id) if item["asset_id"] == asset_id)
+
+
+def move_project_asset(db: Database, project_id: str, asset_id: str, direction: str) -> dict[str, Any]:
+    if direction not in {"up", "down"}:
+        raise ValueError("Clip direction must be 'up' or 'down'")
+    moved = False
+    with db.connection() as connection:
+        _ensure_project_editable(connection, project_id)
+        rows = connection.execute(
+            "SELECT asset_id, order_index FROM project_assets WHERE project_id = ? ORDER BY order_index, asset_id",
+            (project_id,),
+        ).fetchall()
+        ordered = [dict(row) for row in rows]
+        current_index = next((index for index, item in enumerate(ordered) if item["asset_id"] == asset_id), None)
+        if current_index is None:
+            raise KeyError("Clip is not in this project")
+        target_index = current_index - 1 if direction == "up" else current_index + 1
+        if 0 <= target_index < len(ordered):
+            ordered[current_index], ordered[target_index] = ordered[target_index], ordered[current_index]
+            for index, item in enumerate(ordered):
+                connection.execute(
+                    "UPDATE project_assets SET order_index = ? WHERE project_id = ? AND asset_id = ?",
+                    (index, project_id, item["asset_id"]),
+                )
+            _mark_project_dirty(connection, project_id)
+            moved = True
+    if not moved:
+        return next(item for item in get_project_assets(db, project_id) if item["asset_id"] == asset_id)
     return next(item for item in get_project_assets(db, project_id) if item["asset_id"] == asset_id)
 
 
