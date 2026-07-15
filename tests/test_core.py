@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import tempfile
 import unittest
@@ -1212,7 +1213,7 @@ class CoreModelTests(unittest.TestCase):
                 [
                     "ffmpeg", "-y", "-hide_banner", "-loglevel", "error",
                     "-f", "lavfi", "-i", "color=c=0x31565a:s=320x568:d=1.5",
-                    "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=48000",
+                    "-f", "lavfi", "-i", "sine=frequency=440:duration=1.5",
                     "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", str(source),
                 ],
                 check=True,
@@ -1238,6 +1239,15 @@ class CoreModelTests(unittest.TestCase):
             validated = validate_project_output(db, project["id"])
             self.assertEqual(validated["status"], "ready")
             self.assertEqual(validated["manifest"]["validation"]["status"], "passed")
+            volume_check = subprocess.run(
+                ["ffmpeg", "-hide_banner", "-i", str(output), "-af", "volumedetect", "-f", "null", "-"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            volume_match = re.search(r"mean_volume:\s+(-?\d+(?:\.\d+)?) dB", volume_check.stderr)
+            self.assertIsNotNone(volume_match)
+            self.assertGreater(float(volume_match.group(1)), -50)
             credits = json.loads((Path(result["output_dir"]) / "credits.json").read_text())
             self.assertEqual(credits["assets"], [asset["id"]])
             self.assertEqual(credits["provenance"][0]["fingerprint"], asset["fingerprint"])

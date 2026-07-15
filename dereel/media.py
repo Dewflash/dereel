@@ -101,6 +101,7 @@ def quote_concat_path(path: Path) -> str:
 
 def normalize_segment(source: Path, destination: Path, in_point: float, duration: float) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
+    source_has_audio = bool(probe(source)["has_audio"])
     command = [
         "ffmpeg",
         "-y",
@@ -111,16 +112,29 @@ def normalize_segment(source: Path, destination: Path, in_point: float, duration
         f"{max(in_point, 0):.3f}",
         "-i",
         str(source),
-        "-f",
-        "lavfi",
-        "-i",
-        "anullsrc=channel_layout=stereo:sample_rate=48000",
+    ]
+    if source_has_audio:
+        audio_map = "0:a:0"
+    else:
+        command.extend([
+            "-f",
+            "lavfi",
+            "-i",
+            "anullsrc=channel_layout=stereo:sample_rate=48000",
+        ])
+        audio_map = "1:a:0"
+    command.extend([
         "-t",
         f"{max(duration, 0.1):.3f}",
         "-map",
         "0:v:0",
         "-map",
-        "1:a:0",
+        audio_map,
+    ])
+    if source_has_audio:
+        # Preserve clip dialogue/ambience and fill a short source track to the clip window.
+        command.extend(["-af", "apad"])
+    command.extend([
         "-vf",
         "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30",
         "-c:v",
@@ -137,11 +151,10 @@ def normalize_segment(source: Path, destination: Path, in_point: float, duration
         "2",
         "-b:a",
         "128k",
-        "-shortest",
         "-movflags",
         "+faststart",
         str(destination),
-    ]
+    ])
     result = subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "FFmpeg could not normalize the segment")
