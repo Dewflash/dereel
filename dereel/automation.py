@@ -269,13 +269,18 @@ def update_automation(db: Database, automation_id: str, payload: dict[str, Any])
     if rebuild_keys.intersection(payload):
         values["last_project_id"] = ""
     values["updated_at"] = now_iso()
-    db.update("automations", "id", automation_id, values)
     removed_platforms = sorted(set(current.get("platforms") or []) - set(json_loads(values.get("platforms_json"), [])))
     project_id = str(current.get("last_project_id") or "")
-    if removed_platforms and project_id:
-        placeholders = ", ".join("?" for _ in removed_platforms)
-        timestamp = now_iso()
-        with db.connection() as connection:
+    with db.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        assignments = ", ".join(f"{column} = ?" for column in values)
+        connection.execute(
+            f"UPDATE automations SET {assignments} WHERE id = ?",
+            [*values.values(), automation_id],
+        )
+        if removed_platforms and project_id:
+            placeholders = ", ".join("?" for _ in removed_platforms)
+            timestamp = now_iso()
             connection.execute(
                 f"UPDATE publish_jobs SET status = 'failed', error = 'Destination removed from automation', cancelled_at = ?, updated_at = ? WHERE project_id = ? AND platform IN ({placeholders}) AND status IN ('queued', 'ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
                 [timestamp, timestamp, project_id, *removed_platforms],
