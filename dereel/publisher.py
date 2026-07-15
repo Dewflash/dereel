@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -139,7 +140,14 @@ def _write_publish_manifest(output_dir: Path, job_id: str, payload: dict[str, An
     jobs = [item for item in existing.get("jobs", []) if isinstance(item, dict) and item.get("id") != job_id]
     jobs.append({"id": job_id, **payload, "scheduled_for": scheduled_for or ""})
     existing["jobs"] = jobs
-    manifest_path.write_text(json.dumps(existing, indent=2))
+    file_descriptor, temporary_name = tempfile.mkstemp(prefix=".publish-manifest-", suffix=".json", dir=output_dir)
+    os.close(file_descriptor)
+    temporary_path = Path(temporary_name)
+    try:
+        temporary_path.write_text(json.dumps(existing, indent=2))
+        temporary_path.replace(manifest_path)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def _normalize_schedule(scheduled_for: str | None) -> str:
@@ -168,8 +176,12 @@ def create_publish_jobs(
     if not output_dir.is_dir():
         raise ValueError("Render the project before creating publish jobs")
     normalized_schedule = _normalize_schedule(scheduled_for)
-    jobs: list[dict[str, Any]] = []
-    for platform in platforms:
+    requested_platforms = list(dict.fromkeys(str(platform).strip().lower() for platform in platforms if str(platform).strip()))
+    if not requested_platforms:
+        raise ValueError("Choose at least one destination")
+    prepared: list[tuple[str, dict[str, Any]]] = []
+    provenance = publish_provenance(project, output_dir)
+    for platform in requested_platforms:
         if platform not in PLATFORM_SPECS:
             raise ValueError(f"Unsupported platform: {platform}")
         export = output_dir / f"{platform}.mp4"
@@ -177,46 +189,6 @@ def create_publish_jobs(
         if problems:
             raise ValueError(f"{PLATFORM_SPECS[platform]['label']}: " + "; ".join(problems))
         export_sha256 = sha256_file(export)
-        with db.connection() as connection:
-            existing = connection.execute(
-                "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready') ORDER BY created_at DESC LIMIT 1",
-                (project["id"], platform),
-            ).fetchone()
-        if existing:
-            existing_item = dict(existing)
-            existing_payload = json_loads(existing_item.get("payload_json"), {})
-            if not isinstance(existing_payload, dict):
-                existing_payload = {}
-            desired_payload = {
-                "title": project.get("title") or project.get("name"),
-                "caption": project.get("caption", ""),
-                "media_path": str(export),
-                "media_sha256": export_sha256,
-                "requires_public_url": PLATFORM_SPECS[platform]["requires_public_url"],
-                "provenance": publish_provenance(project, output_dir),
-            }
-            if any(existing_payload.get(key) != value for key, value in desired_payload.items()):
-                existing_payload.update(desired_payload)
-                db.update("publish_jobs", "id", existing_item["id"], {"payload_json": json_dumps(existing_payload), "updated_at": now_iso()})
-                existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
-            requested_schedule = normalized_schedule if scheduled_for is not None else str(existing_item.get("scheduled_for") or "")
-            if requested_schedule != str(existing_item.get("scheduled_for") or ""):
-                db.update("publish_jobs", "id", existing_item["id"], {"scheduled_for": requested_schedule, "updated_at": now_iso()})
-                existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
-            jobs.append(existing_item)
-            _write_publish_manifest(output_dir, existing_item["id"], existing_payload, existing_item.get("scheduled_for"))
-            continue
-        job_id = new_id("publish")
-        now = now_iso()
-        selected_account_id = account_id
-        if selected_account_id:
-            account = db.get("publishing_accounts", "id", selected_account_id)
-            if not account or account["platform"] != platform:
-                raise ValueError(f"Account does not match {platform}")
-        else:
-            with db.connection() as connection:
-                account = connection.execute("SELECT * FROM publishing_accounts WHERE platform = ? ORDER BY created_at LIMIT 1", (platform,)).fetchone()
-            selected_account_id = account["id"] if account else None
         payload = {
             "platform": platform,
             "project_id": project["id"],
@@ -227,26 +199,62 @@ def create_publish_jobs(
             "requires_public_url": PLATFORM_SPECS[platform]["requires_public_url"],
             "state": "awaiting_account_connection",
             "privacy_status": "private",
-            "provenance": publish_provenance(project, output_dir),
+            "provenance": provenance,
         }
-        db.insert(
-            "publish_jobs",
-            {
-                "id": job_id,
-                "project_id": project["id"],
-                "account_id": selected_account_id,
-                "platform": platform,
-                "status": "ready",
-                "scheduled_for": normalized_schedule,
-                "remote_id": "",
-                "error": "",
-                "payload_json": json_dumps(payload),
-                "created_at": now,
-                "updated_at": now,
-            },
-        )
-        jobs.append(db.get("publish_jobs", "id", job_id) or {})
-        _write_publish_manifest(output_dir, job_id, payload, normalized_schedule)
+        prepared.append((platform, payload))
+    if account_id and len(prepared) > 1:
+        with db.connection() as connection:
+            account = connection.execute("SELECT platform FROM publishing_accounts WHERE id = ?", (account_id,)).fetchone()
+        if not account or any(account["platform"] != platform for platform, _ in prepared):
+            raise ValueError("Account does not match every selected platform")
+
+    jobs: list[dict[str, Any]] = []
+    with db.connection() as connection:
+        for platform, payload in prepared:
+            existing = connection.execute(
+                "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready') ORDER BY created_at DESC LIMIT 1",
+                (project["id"], platform),
+            ).fetchone()
+            if existing:
+                existing_item = dict(existing)
+                existing_payload = json_loads(existing_item.get("payload_json"), {})
+                if not isinstance(existing_payload, dict):
+                    existing_payload = {}
+                existing_payload.update({
+                    "title": payload["title"],
+                    "caption": payload["caption"],
+                    "media_path": payload["media_path"],
+                    "media_sha256": payload["media_sha256"],
+                    "requires_public_url": payload["requires_public_url"],
+                    "provenance": payload["provenance"],
+                })
+                requested_schedule = normalized_schedule if scheduled_for is not None else str(existing_item.get("scheduled_for") or "")
+                connection.execute(
+                    "UPDATE publish_jobs SET payload_json = ?, scheduled_for = ?, updated_at = ? WHERE id = ?",
+                    (json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
+                )
+                refreshed = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (existing_item["id"],)).fetchone()
+                jobs.append(dict(refreshed) if refreshed else existing_item)
+                continue
+            selected_account_id = account_id
+            if selected_account_id:
+                account = connection.execute("SELECT platform FROM publishing_accounts WHERE id = ?", (selected_account_id,)).fetchone()
+                if not account or account["platform"] != platform:
+                    raise ValueError(f"Account does not match {platform}")
+            else:
+                account = connection.execute("SELECT id FROM publishing_accounts WHERE platform = ? ORDER BY created_at LIMIT 1", (platform,)).fetchone()
+                selected_account_id = account["id"] if account else None
+            job_id = new_id("publish")
+            timestamp = now_iso()
+            connection.execute(
+                "INSERT INTO publish_jobs(id, project_id, account_id, platform, status, scheduled_for, remote_id, error, claim_token, claimed_at, cancelled_at, payload_json, created_at, updated_at) VALUES (?, ?, ?, ?, 'ready', ?, '', '', NULL, NULL, NULL, ?, ?, ?)",
+                (job_id, project["id"], selected_account_id, platform, normalized_schedule, json_dumps(payload), timestamp, timestamp),
+            )
+            created = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (job_id,)).fetchone()
+            jobs.append(dict(created) if created else {})
+    for job in jobs:
+        job_payload = json_loads(job.get("payload_json"), {})
+        _write_publish_manifest(output_dir, job["id"], job_payload if isinstance(job_payload, dict) else {}, job.get("scheduled_for"))
     return jobs
 
 

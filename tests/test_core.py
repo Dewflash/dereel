@@ -812,6 +812,24 @@ class CoreModelTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "export changed"):
                     publish_job(db, {"status": "failed", "platform": "youtube", "payload_json": json.dumps({"media_path": str(output_dir / "youtube.mp4"), "media_sha256": "export-hash"})})
 
+    def test_multi_platform_publish_preparation_is_atomic(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "youtube.mp4").write_bytes(b"youtube export")
+            (output_dir / "instagram.mp4").write_bytes(b"instagram export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Atomic release", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", side_effect=[[], ["Instagram export is invalid"]]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                with self.assertRaisesRegex(ValueError, "Instagram Reels: Instagram export is invalid"):
+                    create_publish_jobs(db, project, ["youtube", "instagram"])
+            with db.connection() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM publish_jobs WHERE project_id = ?", (project["id"],)).fetchone()[0], 0)
+            self.assertFalse((output_dir / "publish-manifest.json").exists())
+
     def test_publish_integrity_backfill_upgrades_legacy_outbox_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
