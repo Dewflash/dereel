@@ -434,6 +434,20 @@ class CoreModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "already published"):
                 mark_publish_job(db, job_id)
 
+    def test_publish_revalidates_the_export_at_attempt_time(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            with self.assertRaisesRegex(ValueError, "export is missing"):
+                publish_job(
+                    db,
+                    {
+                        "status": "failed",
+                        "platform": "instagram",
+                        "account_id": None,
+                        "payload_json": json.dumps({"media_path": str(Path(directory) / "missing.mp4")}),
+                    },
+                )
+
     def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
         class FakeResponse:
             def __init__(self, body: bytes = b"{}", status: int = 200, headers: dict[str, str] | None = None) -> None:

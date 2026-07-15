@@ -409,6 +409,10 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
     if job.get("status") not in {"ready", "failed"}:
         raise ValueError("Publish job is not ready to run")
     payload = json.loads(job.get("payload_json", "{}"))
+    export_path = Path(payload.get("media_path") or "")
+    problems = validate_export(export_path, str(job.get("platform") or ""))
+    if problems:
+        raise ValueError(f"{PLATFORM_SPECS.get(job.get('platform', ''), {}).get('label', 'Publish export')}: " + "; ".join(problems))
     account = db.get("publishing_accounts", "id", job.get("account_id", "")) if job.get("account_id") else None
     if not account:
         with db.connection() as connection:
