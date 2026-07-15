@@ -159,7 +159,8 @@ function renderAssets() {
   state.selectedAssets = new Set([...state.selectedAssets].filter((id) => selectable.has(id)));
   const count = assets.length === state.visibleAssets.length ? `${assets.length}` : `${assets.length} of ${state.visibleAssets.length}`;
   $("#asset-count").textContent = `${count} asset${assets.length === 1 ? "" : "s"}`;
-  $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", state.assetFilter === "references" ? "Save a source URL to Scout." : "Import a cleared video to populate the board.");
+  const emptyDetail = state.assetFilter === "references" ? "Save a source URL to Scout." : state.assetFilter === "content_review" ? "No flagged local media is waiting for a content decision." : "Import a cleared video to populate the board.";
+  $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", emptyDetail);
   renderReviewToolbar();
   renderAssetInspector();
 }

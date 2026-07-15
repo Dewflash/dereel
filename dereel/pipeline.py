@@ -512,12 +512,25 @@ def list_assets(db: Database, view: str = "all") -> list[dict[str, Any]]:
         query += " WHERE local_path IS NOT NULL AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved')"
     elif view == "references":
         query += " WHERE kind = 'reference'"
-    elif view == "review":
-        query += " WHERE status = 'candidate' OR rights_status = 'pending_review'"
     query += " ORDER BY created_at DESC"
     with db.connection() as connection:
         rows = connection.execute(query, params).fetchall()
-    return [asset_view(dict(row)) for row in rows]
+    assets = [asset_view(dict(row)) for row in rows]
+    if view == "review":
+        return [
+            asset for asset in assets
+            if asset.get("status") == "candidate"
+            or asset.get("rights_status") == "pending_review"
+            or (asset.get("kind") == "media" and asset.get("content_risk", {}).get("status") == "flagged")
+        ]
+    if view == "content_review":
+        return [
+            asset for asset in assets
+            if asset.get("kind") == "media"
+            and asset.get("local_path")
+            and asset.get("content_risk", {}).get("status") == "flagged"
+        ]
+    return assets
 
 
 def review_asset(db: Database, asset_id: str, action: str, note: str = "") -> dict[str, Any]:
