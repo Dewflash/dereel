@@ -15,7 +15,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
-from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
+from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
 from dereel.server import AppState, Handler, close_multipart_files, finalize_publish_success, parse_multipart, parse_multipart_stream, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
@@ -1015,6 +1015,35 @@ class CoreModelTests(unittest.TestCase):
             complete_publish_attempt(db, attempt["id"], "published", remote_id="draft:123")
             self.assertEqual(list_publish_attempts(db, job_id)[0]["remote_id"], "draft:123")
             self.assertEqual((db.get("publish_jobs", "id", job_id)["status"], db.get("publish_jobs", "id", job_id)["remote_id"]), ("published", "draft:123"))
+
+    def test_youtube_upload_streams_file_body(self) -> None:
+        class FakeResponse:
+            def __init__(self, body=b"{}", headers=None):
+                self._body, self.headers = body, headers or {}
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                return False
+            def read(self):
+                return self._body
+
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "youtube.mp4"
+            media.write_bytes(b"0123456789")
+            seen = []
+
+            def fake_urlopen(request, timeout):
+                seen.append(request)
+                if len(seen) == 1:
+                    return FakeResponse(headers={"Location": "https://upload.example/video"})
+                seen.append(request.data.read())
+                return FakeResponse(b'{"id":"video_1"}')
+
+            with patch("dereel.publisher.urllib.request.urlopen", side_effect=fake_urlopen):
+                result = publish_youtube({"media_path": str(media)}, "token")
+            self.assertEqual(result, "video_1")
+            self.assertEqual(seen[2], b"0123456789")
+            self.assertEqual(seen[1].get_header("Content-length"), "10")
 
     def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
         class FakeResponse:

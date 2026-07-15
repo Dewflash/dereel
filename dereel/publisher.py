@@ -461,6 +461,9 @@ def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
     path = Path(payload["media_path"])
     if not path.is_file():
         raise ValueError("YouTube export is missing")
+    file_size = path.stat().st_size
+    if file_size <= 0:
+        raise ValueError("YouTube export is empty")
     body = {
         "snippet": {
             "title": str(payload.get("title") or "DeReel short")[:100],
@@ -477,7 +480,7 @@ def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
         headers={
             "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json; charset=UTF-8",
-            "X-Upload-Content-Length": str(path.stat().st_size),
+            "X-Upload-Content-Length": str(file_size),
             "X-Upload-Content-Type": media_type,
         },
         method="POST",
@@ -489,17 +492,22 @@ def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
         raise _http_error(error) from error
     if not upload_url:
         raise RuntimeError("YouTube did not return a resumable upload URL")
-    upload_request = urllib.request.Request(
-        upload_url,
-        data=path.read_bytes(),
-        headers={"Authorization": f"Bearer {access_token}", "Content-Type": media_type},
-        method="PUT",
-    )
-    try:
-        with urllib.request.urlopen(upload_request, timeout=900) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except urllib.error.HTTPError as error:
-        raise _http_error(error) from error
+    with path.open("rb") as source:
+        upload_request = urllib.request.Request(
+            upload_url,
+            data=source,
+            headers={
+                "Authorization": f"Bearer {access_token}",
+                "Content-Type": media_type,
+                "Content-Length": str(file_size),
+            },
+            method="PUT",
+        )
+        try:
+            with urllib.request.urlopen(upload_request, timeout=900) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            raise _http_error(error) from error
     video_id = result.get("id")
     if not video_id:
         raise RuntimeError("YouTube upload returned no video id")
