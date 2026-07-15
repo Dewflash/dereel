@@ -1429,6 +1429,44 @@ class CoreModelTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "export changed"):
                     publish_job(db, {"status": "failed", "platform": "youtube", "payload_json": json.dumps({"media_path": str(output_dir / "youtube.mp4"), "media_sha256": "export-hash"})})
 
+    def test_publish_rechecks_source_rights_after_package_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "youtube.mp4").write_bytes(b"export")
+            source = root / "source.mp4"
+            source.write_bytes(b"source")
+            db = Database(root / "test.sqlite3")
+            asset = create_asset(
+                db,
+                kind="media",
+                title="Cleared source",
+                local_path=str(source),
+                mime_type="video/mp4",
+                rights_status="owned_distribution",
+                metadata={"duration": 4, "width": 720, "height": 1280, "fingerprint": "source-hash"},
+            )
+            project = create_project(db, {"name": "Rights gate", "theme": "cats"})
+            db.update(
+                "projects",
+                "id",
+                project["id"],
+                {
+                    "status": "ready",
+                    "output_dir": str(output_dir),
+                    "manifest_json": json.dumps({"inputs": [{"asset_id": asset["id"]}]}),
+                },
+            )
+            project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                job = create_publish_jobs(db, project, ["youtube"])[0]
+            review_asset(db, asset["id"], "reject", "Rights withdrawn")
+            with self.assertRaisesRegex(ValueError, "no longer cleared"):
+                create_publish_jobs(db, project, ["youtube"])
+            with self.assertRaisesRegex(ValueError, "no longer cleared"):
+                publish_job(db, db.get("publish_jobs", "id", job["id"]) or job)
+
     def test_multi_platform_publish_preparation_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1530,21 +1568,27 @@ class CoreModelTests(unittest.TestCase):
             second_output.mkdir()
             (first_output / "youtube.mp4").write_bytes(b"first")
             (second_output / "youtube.mp4").write_bytes(b"second")
+            old_source = root / "old.mp4"
+            new_source = root / "new.mp4"
+            old_source.write_bytes(b"old source")
+            new_source.write_bytes(b"new source")
             db = Database(root / "test.sqlite3")
+            old_asset = create_asset(db, kind="media", title="Old source", local_path=str(old_source), mime_type="video/mp4", rights_status="owned_distribution", metadata={"duration": 4, "width": 720, "height": 1280, "fingerprint": "old-source"})
+            new_asset = create_asset(db, kind="media", title="New source", local_path=str(new_source), mime_type="video/mp4", rights_status="owned_distribution", metadata={"duration": 4, "width": 720, "height": 1280, "fingerprint": "new-source"})
             project = create_project(db, {"name": "Refreshing release", "theme": "cats"})
-            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(first_output), "manifest_json": json.dumps({"inputs": [{"asset_id": "asset_old"}]})})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(first_output), "manifest_json": json.dumps({"inputs": [{"asset_id": old_asset["id"]}]})})
             project = db.get("projects", "id", project["id"]) or project
             with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="first-hash"):
                 first_job = create_publish_jobs(db, project, ["youtube"])[0]
-            db.update("projects", "id", project["id"], {"output_dir": str(second_output), "manifest_json": json.dumps({"inputs": [{"asset_id": "asset_new"}]})})
+            db.update("projects", "id", project["id"], {"output_dir": str(second_output), "manifest_json": json.dumps({"inputs": [{"asset_id": new_asset["id"]}]})})
             refreshed_project = db.get("projects", "id", project["id"]) or project
             with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="second-hash"):
                 second_job = create_publish_jobs(db, refreshed_project, ["youtube"], scheduled_for="2026-07-16T12:00:00+08:00")[0]
             payload = json.loads(second_job["payload_json"])
             package_manifest = json.loads((second_output / "publish-manifest.json").read_text())
-            self.assertEqual((second_job["id"], payload["media_sha256"], payload["provenance"]["asset_ids"]), (first_job["id"], "second-hash", ["asset_new"]))
+            self.assertEqual((second_job["id"], payload["media_sha256"], payload["provenance"]["asset_ids"]), (first_job["id"], "second-hash", [new_asset["id"]]))
             self.assertEqual(second_job["scheduled_for"], "2026-07-16T04:00:00+00:00")
-            self.assertEqual((package_manifest["jobs"][0]["id"], package_manifest["jobs"][0]["provenance"]["asset_ids"], package_manifest["jobs"][0]["scheduled_for"]), (first_job["id"], ["asset_new"], "2026-07-16T04:00:00+00:00"))
+            self.assertEqual((package_manifest["jobs"][0]["id"], package_manifest["jobs"][0]["provenance"]["asset_ids"], package_manifest["jobs"][0]["scheduled_for"]), (first_job["id"], [new_asset["id"]], "2026-07-16T04:00:00+00:00"))
 
     def test_failed_publish_job_is_reused_for_retry_with_fresh_export(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

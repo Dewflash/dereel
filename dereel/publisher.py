@@ -16,6 +16,7 @@ from typing import Any
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import probe, sha256_file
+from .pipeline import PRODUCTION_RIGHTS, content_risk, production_health_error
 
 
 PLATFORM_SPECS: dict[str, dict[str, Any]] = {
@@ -233,6 +234,35 @@ def publish_provenance(project: dict[str, Any], output_dir: Path) -> dict[str, A
     }
 
 
+def _validate_publish_sources(db: Database, payload: dict[str, Any]) -> None:
+    provenance = payload.get("provenance") if isinstance(payload.get("provenance"), dict) else {}
+    raw_asset_ids = provenance.get("asset_ids", [])
+    if raw_asset_ids in (None, ""):
+        return
+    if not isinstance(raw_asset_ids, list):
+        raise ValueError("Publish provenance is invalid")
+    asset_ids = list(dict.fromkeys(str(asset_id).strip() for asset_id in raw_asset_ids if str(asset_id).strip()))
+    if not asset_ids:
+        return
+    placeholders = ", ".join("?" for _ in asset_ids)
+    with db.connection() as connection:
+        rows = connection.execute(f"SELECT * FROM assets WHERE id IN ({placeholders})", asset_ids).fetchall()
+    if len(rows) != len(asset_ids):
+        raise ValueError("Publish provenance references a missing source asset")
+    by_id = {str(row["id"]): dict(row) for row in rows}
+    for asset_id in asset_ids:
+        asset = by_id[asset_id]
+        title = str(asset.get("title") or asset_id)
+        if asset.get("rights_status") not in PRODUCTION_RIGHTS or asset.get("status") not in {"ready", "approved"}:
+            raise ValueError(f"Publish source '{title}' is no longer cleared for production")
+        risk = content_risk(asset)
+        if risk.get("status") == "flagged":
+            raise ValueError(f"Publish source '{title}' has a content-risk review requirement")
+        health_error = production_health_error(asset)
+        if health_error:
+            raise ValueError(f"Publish source '{title}' is not healthy: {health_error}")
+
+
 def _write_publish_manifest(output_dir: Path, job_id: str, payload: dict[str, Any], scheduled_for: str | None) -> None:
     with _PUBLISH_MANIFEST_LOCK:
         manifest_path = output_dir / "publish-manifest.json"
@@ -301,6 +331,7 @@ def create_publish_jobs(
         selected_account_ids.setdefault(requested_platforms[0], normalized_account_id)
     prepared: list[tuple[str, dict[str, Any]]] = []
     provenance = publish_provenance(project, output_dir)
+    _validate_publish_sources(db, {"provenance": provenance})
     for platform in requested_platforms:
         if platform not in PLATFORM_SPECS:
             raise ValueError(f"Unsupported platform: {platform}")
@@ -936,7 +967,13 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
         raise ValueError("Publish job is cancelled")
     if job.get("status") not in {"ready", "failed"}:
         raise ValueError("Publish job is not ready to run")
-    payload = json.loads(job.get("payload_json", "{}"))
+    try:
+        payload = json.loads(job.get("payload_json", "{}"))
+    except json.JSONDecodeError as error:
+        raise ValueError("Publish job payload is invalid") from error
+    if not isinstance(payload, dict):
+        raise ValueError("Publish job payload is invalid")
+    _validate_publish_sources(db, payload)
     export_path = Path(payload.get("media_path") or "")
     problems = validate_export(export_path, str(job.get("platform") or ""))
     if problems:
