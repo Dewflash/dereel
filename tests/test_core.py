@@ -142,6 +142,7 @@ class CoreModelTests(unittest.TestCase):
                 review_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_reviews)").fetchall()}
                 content_review_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_content_reviews)").fetchall()}
                 content_review_indexes = {row[1] for row in connection.execute("PRAGMA index_list(asset_content_reviews)").fetchall()}
+                automation_columns = {row[1] for row in connection.execute("PRAGMA table_info(automations)").fetchall()}
                 schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
             self.assertIn("automation_id", columns)
             self.assertIn("retry_of", columns)
@@ -150,7 +151,8 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("claimed_at", publish_columns)
             self.assertIn("'drafted'", publish_schema)
             self.assertIn("'drafted'", attempt_schema)
-            self.assertEqual(schema_version, "12")
+            self.assertEqual(schema_version, "13")
+            self.assertIn("account_ids_json", automation_columns)
             self.assertIn("matches_json", content_review_columns)
             self.assertIn("idx_asset_content_reviews_asset", content_review_indexes)
             self.assertIn("attempt_number", attempt_columns)
@@ -252,7 +254,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
             self.assertIn("idx_jobs_retry_of", index_names)
-            self.assertEqual(schema_version, "12")
+            self.assertEqual(schema_version, "13")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -527,6 +529,41 @@ class CoreModelTests(unittest.TestCase):
             tracks = creator.call_args.args[1]["audio_tracks"]
             self.assertEqual([track["role"] for track in tracks], ["music", "sfx", "voiceover"])
             self.assertEqual((tracks[0]["volume"], tracks[1]["start_time"], tracks[2]["volume"]), (0.0, 0.4, 0.8))
+
+    def test_automation_account_mappings_persist_and_reach_publish_creation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            for account in (
+                {"id": "automation_youtube", "platform": "youtube", "label": "Automation YouTube"},
+                {"id": "automation_instagram", "platform": "instagram", "label": "Automation Instagram"},
+            ):
+                db.insert("publishing_accounts", {**account, "status": "not_connected", "config_json": "{}", "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            automation = create_automation(
+                db,
+                {
+                    "name": "Mapped batch",
+                    "watch_dir": str(root),
+                    "platforms": ["youtube", "instagram"],
+                    "account_ids": {"youtube": "automation_youtube", "instagram": "automation_instagram"},
+                },
+            )
+            self.assertEqual(automation["account_ids"], {"youtube": "automation_youtube", "instagram": "automation_instagram"})
+            with self.assertRaisesRegex(ValueError, "does not match youtube"):
+                create_automation(db, {"name": "Bad mapping", "watch_dir": str(root), "platforms": ["youtube"], "account_ids": {"youtube": "automation_instagram"}})
+
+            video_path = root / "video.mp4"
+            video_path.write_bytes(b"video")
+            video = create_asset(db, kind="media", title="Mapped source", local_path=str(video_path), rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280}, automation_id=automation["id"])
+            with patch("dereel.automation.scan_watch_folder", return_value={"found": 1, "imported": [video], "duplicates": [], "errors": []}), patch("dereel.automation.create_project", return_value={"id": "automation_project"}), patch("dereel.automation.plan_project", return_value={"assets": [{"asset_id": video["id"]}]}), patch("dereel.automation.render_project", return_value={"output_dir": str(root / "output")}), patch("dereel.automation.create_publish_jobs", return_value=[]) as publisher:
+                result = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual(result["status"], "rendered")
+            self.assertEqual(publisher.call_args.kwargs["account_ids"], {"youtube": "automation_youtube", "instagram": "automation_instagram"})
+            reduced = update_automation(db, automation["id"], {"platforms": ["youtube"]})
+            self.assertEqual(reduced["account_ids"], {"youtube": "automation_youtube"})
+            with self.assertRaisesRegex(ValueError, "assigned to automation"):
+                delete_publishing_account(db, "automation_youtube")
+            delete_publishing_account(db, "automation_instagram")
 
     def test_automation_submission_failure_is_persisted_and_releases_claim(self) -> None:
         class RejectingPool:

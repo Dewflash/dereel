@@ -60,10 +60,36 @@ def _platforms(value: Any) -> list[str]:
     return list(dict.fromkeys(str(item).strip().lower() for item in values if str(item).strip() in AUTOMATION_PLATFORMS))
 
 
+def _account_ids(db: Database, value: Any, platforms: list[str]) -> dict[str, str]:
+    if value is None:
+        value = {}
+    if not isinstance(value, dict):
+        raise ValueError("Automation account_ids must be an object")
+    result: dict[str, str] = {}
+    for platform, account_id in value.items():
+        normalized_platform = str(platform or "").strip().lower()
+        normalized_id = str(account_id or "").strip()
+        if normalized_platform and normalized_id:
+            result[normalized_platform] = normalized_id
+    unknown_platforms = set(result) - set(platforms)
+    if unknown_platforms:
+        raise ValueError("Automation account selection includes an unselected platform")
+    if not result:
+        return result
+    with db.connection() as connection:
+        for platform, account_id in result.items():
+            account = connection.execute("SELECT platform FROM publishing_accounts WHERE id = ?", (account_id,)).fetchone()
+            if not account or account["platform"] != platform:
+                raise ValueError(f"Automation account does not match {platform}")
+    return result
+
+
 def automation_view(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["tags"] = json_loads(result.pop("tags_json", "[]"), [])
     result["platforms"] = json_loads(result.pop("platforms_json", "[]"), [])
+    account_ids = json_loads(result.pop("account_ids_json", "{}"), {})
+    result["account_ids"] = account_ids if isinstance(account_ids, dict) else {}
     result["auto_render"] = bool(result.get("auto_render"))
     result["enabled"] = bool(result.get("enabled"))
     return result
@@ -167,6 +193,10 @@ def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str
         raise ValueError("A watch folder is required for this source mode")
     provider_limit = _as_int(payload.get("provider_limit", current.get("provider_limit", 12)), 12, 1, 24)
     platforms = _platforms(payload.get("platforms", current.get("platforms", [])))
+    requested_account_ids = payload.get("account_ids", current.get("account_ids", {}))
+    if "platforms" in payload and "account_ids" not in payload and isinstance(requested_account_ids, dict):
+        requested_account_ids = {platform: account_id for platform, account_id in requested_account_ids.items() if str(platform).strip().lower() in platforms}
+    account_ids = _account_ids(db, requested_account_ids, platforms)
     music_asset_id = str(payload.get("music_asset_id", current.get("music_asset_id", "")) or "").strip()
     sfx_asset_id = str(payload.get("sfx_asset_id", current.get("sfx_asset_id", "")) or "").strip()
     voiceover_asset_id = str(payload.get("voiceover_asset_id", current.get("voiceover_asset_id", "")) or "").strip()
@@ -196,6 +226,7 @@ def _normalized_payload(db: Database, payload: dict[str, Any], current: dict[str
         "voiceover_volume": _as_float(payload.get("voiceover_volume", current.get("voiceover_volume", 1.0)), 1.0, 0.0, 1.0),
         "voiceover_start_time": _as_float(payload.get("voiceover_start_time", current.get("voiceover_start_time", 0)), 0.0, 0.0, 3600.0),
         "platforms_json": json_dumps(platforms),
+        "account_ids_json": json_dumps(account_ids),
         "interval_minutes": _as_int(payload.get("interval_minutes", current.get("interval_minutes", 0)), 0, 0, 10080),
         "publish_delay_minutes": _as_int(payload.get("publish_delay_minutes", current.get("publish_delay_minutes", 0)), 0, 0, 43200),
         "auto_render": int(_as_bool(payload.get("auto_render", current.get("auto_render", True)), True)),
@@ -492,7 +523,7 @@ def run_automation(
         if automation["publish_delay_minutes"] > 0:
             scheduled_for = (datetime.now(timezone.utc) + timedelta(minutes=automation["publish_delay_minutes"])).replace(microsecond=0).isoformat()
         project_row = db.get("projects", "id", project["id"]) or project
-        publish_jobs = create_publish_jobs(db, project_row, automation["platforms"], scheduled_for)
+        publish_jobs = create_publish_jobs(db, project_row, automation["platforms"], scheduled_for, account_ids=automation["account_ids"])
     return {
         "status": "rendered",
         "project_id": project["id"],

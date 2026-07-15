@@ -168,6 +168,7 @@ class Database:
                     voiceover_volume REAL NOT NULL DEFAULT 1.0,
                     voiceover_start_time REAL NOT NULL DEFAULT 0,
                     platforms_json TEXT NOT NULL DEFAULT '[]',
+                    account_ids_json TEXT NOT NULL DEFAULT '{}',
                     interval_minutes INTEGER NOT NULL DEFAULT 0,
                     publish_delay_minutes INTEGER NOT NULL DEFAULT 0,
                     auto_render INTEGER NOT NULL DEFAULT 1,
@@ -267,7 +268,7 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC);
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '12');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '13');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -289,6 +290,7 @@ class Database:
                 "voiceover_asset_id": "TEXT",
                 "voiceover_volume": "REAL NOT NULL DEFAULT 1.0",
                 "voiceover_start_time": "REAL NOT NULL DEFAULT 0",
+                "account_ids_json": "TEXT NOT NULL DEFAULT '{}'",
             }
             for column, definition in automation_migrations.items():
                 if column not in automation_columns:
@@ -373,7 +375,7 @@ class Database:
                     connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_claim ON publish_jobs(claim_token)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '12')")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '13')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

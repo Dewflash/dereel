@@ -183,6 +183,10 @@ def delete_publishing_account(db: Database, account_id: str) -> None:
         account = connection.execute("SELECT id FROM publishing_accounts WHERE id = ?", (account_id,)).fetchone()
         if not account:
             raise KeyError("Publishing account not found")
+        for automation in connection.execute("SELECT name, account_ids_json FROM automations").fetchall():
+            mappings = json_loads(automation["account_ids_json"], {})
+            if isinstance(mappings, dict) and account_id in mappings.values():
+                raise ValueError(f"Account cannot be deleted while assigned to automation: {automation['name']}")
         pending = connection.execute(
             "SELECT id FROM publish_jobs WHERE account_id = ? AND (status IN ('queued', 'ready') OR (claim_token IS NOT NULL AND claim_token != '')) LIMIT 1",
             (account_id,),

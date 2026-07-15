@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, automationDraft: { accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
 let refreshInFlight = null;
 let refreshQueued = false;
 
@@ -405,6 +405,30 @@ function formatInterval(minutes) {
   return Number.isInteger(hours) ? `every ${hours} hr` : `every ${value} min`;
 }
 
+function renderAutomationAccountPickers() {
+  const container = $("#automation-account-picks");
+  const form = $("#automation-form");
+  if (!container || !form) return;
+  const currentSelections = {};
+  $$(".automation-account-select", container).forEach((select) => { currentSelections[select.dataset.platform] = select.value; });
+  state.automationDraft.accountIds = { ...(state.automationDraft.accountIds || {}), ...currentSelections };
+  const selectedPlatforms = $$('input[name="platforms"]:checked', form).map((input) => input.value);
+  const selectedSet = new Set(selectedPlatforms);
+  Object.keys(state.automationDraft.accountIds).forEach((platform) => { if (!selectedSet.has(platform)) delete state.automationDraft.accountIds[platform]; });
+  container.innerHTML = selectedPlatforms.map((platform) => {
+    const accounts = state.accounts.filter((account) => account.platform === platform);
+    const selectedId = accounts.some((account) => account.id === state.automationDraft.accountIds[platform]) ? state.automationDraft.accountIds[platform] : "";
+    if (selectedId) state.automationDraft.accountIds[platform] = selectedId;
+    else delete state.automationDraft.accountIds[platform];
+    const label = state.platforms.find((item) => item.id === platform)?.label || platform;
+    const options = accounts.length ? [`<option value="">Auto-select first configured account</option>`, ...accounts.map((account) => {
+      const readiness = account.readiness?.ready ? "ready" : "needs setup";
+      return `<option value="${escapeHtml(account.id)}" ${account.id === selectedId ? "selected" : ""}>${escapeHtml(account.label)} · ${escapeHtml(readiness)}</option>`;
+    })].join("") : `<option value="">No account configured</option>`;
+    return `<label>${escapeHtml(label)} account<select class="automation-account-select" data-platform="${escapeHtml(platform)}" name="account_id_${escapeHtml(platform)}" ${accounts.length ? "" : "disabled"}>${options}</select></label>`;
+  }).join("");
+}
+
 function renderAutomations() {
   const list = $("#automation-list");
   if (!list) return;
@@ -417,6 +441,7 @@ function renderAutomations() {
     const detail = `${automation.source_mode.replaceAll("_", " + ")} · ${formatInterval(automation.interval_minutes)} · ${automation.default_rights.replaceAll("_", " ")} · ${lastRun}`;
     return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(automation.name)}</strong><small>${escapeHtml(source)} · ${escapeHtml(detail)}${automation.last_error ? ` · ${escapeHtml(automation.last_error)}` : ""}</small></div>${statusPill(automation.status)}<button class="row-action" data-inspect-automation="${automation.id}">History</button><button class="row-action" data-edit-automation="${automation.id}" ${running ? "disabled" : ""}>Edit</button><button class="row-action" data-run-automation="${automation.id}" ${running ? "disabled" : ""}>Run</button><button class="row-action" data-toggle-automation="${automation.id}">${toggleLabel}</button><button class="row-action danger-action" data-delete-automation="${automation.id}">Delete</button></div>`;
   }).join("") : empty("No automations yet", "Create a recipe to watch a local folder and build repeatable releases.");
+  renderAutomationAccountPickers();
   renderAutomationRuns();
 }
 
@@ -465,12 +490,14 @@ function resetAutomationForm() {
   const form = $("#automation-form");
   if (!form) return;
   state.editingAutomationId = "";
+  state.automationDraft.accountIds = {};
   form.reset();
   $("#automation-form-eyebrow").textContent = "AUTOMATION RECIPE";
   $("#automation-form-title").textContent = "New recipe";
   $("#automation-submit").textContent = "Create automation";
   $("#automation-cancel").hidden = true;
   updateAutomationSourceFields();
+  renderAutomationAccountPickers();
   renderAudioSelect();
 }
 
@@ -515,6 +542,7 @@ function editAutomation(automationId) {
   $("input[name=voiceover_start_time]", form).value = automation.voiceover_start_time ?? 0;
   $("input[name=voiceover_volume]", form).value = automation.voiceover_volume ?? 1;
   $$('input[name="platforms"]', form).forEach((input) => { input.checked = automation.platforms.includes(input.value); });
+  state.automationDraft.accountIds = { ...(automation.account_ids || {}) };
   $("input[name=auto_render]", form).checked = automation.auto_render;
   $("input[name=enabled]", form).checked = automation.enabled;
   $("#automation-form-eyebrow").textContent = "EDIT AUTOMATION";
@@ -523,6 +551,7 @@ function editAutomation(automationId) {
   $("#automation-cancel").hidden = false;
   updateAutomationSourceFields();
   showView("automations");
+  renderAutomationAccountPickers();
 }
 
 async function submitAutomation(form) {
@@ -532,6 +561,13 @@ async function submitAutomation(form) {
     const data = new FormData(form);
     const payload = Object.fromEntries(data);
     payload.platforms = data.getAll("platforms").map(String);
+    const accountIds = {};
+    payload.platforms.forEach((platform) => {
+      const accountId = String(data.get(`account_id_${platform}`) || "");
+      if (accountId) accountIds[platform] = accountId;
+    });
+    payload.account_ids = accountIds;
+    state.automationDraft.accountIds = accountIds;
     payload.tags = String(data.get("tags") || "").split(",");
     payload.duration_target = Number(data.get("duration_target") || 35);
     payload.interval_minutes = Number(data.get("interval_minutes") || 0);
@@ -793,6 +829,7 @@ $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDef
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
 $("#automation-form").addEventListener("submit", (event) => { event.preventDefault(); submitAutomation(event.currentTarget); });
 $("#automation-source-mode").addEventListener("change", updateAutomationSourceFields);
+$("#automation-form").addEventListener("change", (event) => { if (event.target.name === "platforms" || event.target.classList.contains("automation-account-select")) renderAutomationAccountPickers(); });
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
 $("#publish-form").addEventListener("submit", (event) => { event.preventDefault(); submitPublish(event.currentTarget).catch((error) => toast(error.message, true)); });
 $("#publish-form").addEventListener("change", () => renderPublishAccountPickers());
