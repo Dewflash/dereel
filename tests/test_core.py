@@ -548,6 +548,16 @@ class CoreModelTests(unittest.TestCase):
             self.assertIsNotNone(db.get("assets", "id", asset["id"]))
             self.assertFalse((root / "outputs" / project["id"]).exists())
 
+    def test_delete_project_preserves_publish_history(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Published project", "theme": "history"})
+            db.insert("publish_jobs", {"id": "published_project_job", "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "published", "scheduled_for": "", "remote_id": "video-1", "error": "", "claim_token": None, "claimed_at": None, "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            with self.assertRaisesRegex(ValueError, "publish history"):
+                delete_project(db, project["id"], root / "outputs")
+            self.assertIsNotNone(db.get("projects", "id", project["id"]))
+
     def test_timeline_moves_clips_and_marks_ready_projects_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
