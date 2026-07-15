@@ -457,7 +457,7 @@ def _automation_asset_ids(db: Database, automation_id: str) -> list[str]:
 def _publish_job_platforms(db: Database, project_id: str) -> set[str]:
     with db.connection() as connection:
         rows = connection.execute(
-            "SELECT DISTINCT platform FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL",
+            "SELECT DISTINCT platform FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL AND status IN ('queued', 'ready', 'drafted', 'published')",
             (project_id,),
         ).fetchall()
     return {str(row["platform"]) for row in rows}

@@ -332,7 +332,7 @@ def create_publish_jobs(
                 if not account or account["platform"] != platform:
                     raise ValueError(f"Account does not match {platform}")
             existing = connection.execute(
-                "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready') ORDER BY created_at DESC LIMIT 1",
+                "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready', 'failed') AND cancelled_at IS NULL ORDER BY created_at DESC LIMIT 1",
                 (project["id"], platform),
             ).fetchone()
             if existing:
@@ -351,15 +351,16 @@ def create_publish_jobs(
                     "provenance": payload["provenance"],
                 })
                 requested_schedule = normalized_schedule if scheduled_for is not None else str(existing_item.get("scheduled_for") or "")
+                next_status = "ready" if existing_item.get("status") == "failed" else existing_item["status"]
                 if platform in selected_account_ids:
                     connection.execute(
-                        "UPDATE publish_jobs SET account_id = ?, payload_json = ?, scheduled_for = ?, updated_at = ? WHERE id = ?",
-                        (selected_account_id, json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
+                        "UPDATE publish_jobs SET status = ?, account_id = ?, payload_json = ?, scheduled_for = ?, error = '', updated_at = ? WHERE id = ?",
+                        (next_status, selected_account_id, json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
                     )
                 else:
                     connection.execute(
-                        "UPDATE publish_jobs SET payload_json = ?, scheduled_for = ?, updated_at = ? WHERE id = ?",
-                        (json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
+                        "UPDATE publish_jobs SET status = ?, payload_json = ?, scheduled_for = ?, error = '', updated_at = ? WHERE id = ?",
+                        (next_status, json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
                     )
                 refreshed = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (existing_item["id"],)).fetchone()
                 jobs.append(dict(refreshed) if refreshed else existing_item)

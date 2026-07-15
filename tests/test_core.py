@@ -637,7 +637,7 @@ class CoreModelTests(unittest.TestCase):
                 retried = run_automation(db, automation["id"], root / "library", root / "outputs")
             self.assertEqual((retried["status"], retried["project_id"]), ("rendered", project_id))
             self.assertEqual(publisher.call_count, 1)
-            self.assertEqual(publisher.call_args.args[2], ["instagram"])
+            self.assertEqual(publisher.call_args.args[2], ["youtube", "instagram"])
             with db.connection() as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
 
@@ -1545,6 +1545,31 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual((second_job["id"], payload["media_sha256"], payload["provenance"]["asset_ids"]), (first_job["id"], "second-hash", ["asset_new"]))
             self.assertEqual(second_job["scheduled_for"], "2026-07-16T04:00:00+00:00")
             self.assertEqual((package_manifest["jobs"][0]["id"], package_manifest["jobs"][0]["provenance"]["asset_ids"], package_manifest["jobs"][0]["scheduled_for"]), (first_job["id"], ["asset_new"], "2026-07-16T04:00:00+00:00"))
+
+    def test_failed_publish_job_is_reused_for_retry_with_fresh_export(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "youtube.mp4").write_bytes(b"current export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Retry release", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="first-hash"):
+                original = create_publish_jobs(db, project, ["youtube"])[0]
+            self.assertTrue(claim_publish_job(db, original["id"]))
+            attempt = begin_publish_attempt(db, original["id"], "manual")
+            fail_publish_attempt(db, original["id"], attempt["id"], "temporary upload failure")
+
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="fresh-hash"):
+                retried = create_publish_jobs(db, project, ["youtube"], scheduled_for="2026-07-16T12:00:00+08:00")[0]
+
+            stored = db.get("publish_jobs", "id", original["id"]) or {}
+            payload = json.loads(stored["payload_json"])
+            self.assertEqual((retried["id"], stored["status"], stored["error"], stored["claim_token"]), (original["id"], "ready", "", None))
+            self.assertEqual((stored["scheduled_for"], payload["media_sha256"]), ("2026-07-16T04:00:00+00:00", "fresh-hash"))
+            self.assertEqual(len(list_publish_attempts(db, original["id"])), 1)
 
     def test_publish_preparation_cannot_mutate_a_claimed_job(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
