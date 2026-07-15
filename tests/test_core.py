@@ -314,6 +314,31 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
 
+    def test_scheduler_recovers_after_transient_database_error(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(
+                Settings(
+                    root=root,
+                    data_dir=root / "data",
+                    database_path=root / "data" / "test.sqlite3",
+                    originals_dir=root / "library",
+                    audio_dir=root / "audio",
+                    output_dir=root / "outputs",
+                    web_dir=root,
+                )
+            )
+            with patch.object(
+                app,
+                "queue_due_automations",
+                side_effect=[sqlite3.OperationalError("unable to open database file"), None],
+            ), patch.object(app.stop_event, "wait", side_effect=[False, False, True]):
+                app.scheduler_loop()
+            status = app.scheduler_diagnostics()
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["last_error"], "unable to open database file")
+            self.assertIsNotNone(status["last_success_at"])
+
     def test_active_automation_freezes_configuration_but_allows_pause(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")

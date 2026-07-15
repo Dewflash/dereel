@@ -93,11 +93,11 @@ def finalize_publish_success(db: Database, job_id: str, attempt: dict[str, Any],
             return
 
 
-def runtime_diagnostics() -> dict[str, Any]:
+def runtime_diagnostics(state: Any | None = None) -> dict[str, Any]:
     ffmpeg_path = shutil.which("ffmpeg") or ""
     ffprobe_path = shutil.which("ffprobe") or ""
     filters = available_filters() if ffmpeg_path else set()
-    return {
+    diagnostics: dict[str, Any] = {
         "media": {
             "ffmpeg": bool(ffmpeg_path),
             "ffprobe": bool(ffprobe_path),
@@ -107,6 +107,9 @@ def runtime_diagnostics() -> dict[str, Any]:
         },
         "providers": configured_providers(),
     }
+    if state is not None:
+        diagnostics["scheduler"] = state.scheduler_diagnostics()
+    return diagnostics
 
 
 def recover_interrupted_jobs(db: Database) -> list[str]:
@@ -343,6 +346,14 @@ class AppState:
         self.settings = app_settings
         self.db = Database(app_settings.database_path)
         self.stop_event = threading.Event()
+        self._scheduler_status_lock = threading.Lock()
+        self._scheduler_status: dict[str, Any] = {
+            "status": "starting",
+            "last_run_at": None,
+            "last_success_at": None,
+            "last_error": "",
+            "last_error_at": None,
+        }
         recover_interrupted_jobs(self.db)
         backfill_publish_integrity(self.db)
 
@@ -439,33 +450,50 @@ class AppState:
                 job = create_job(self.db, None, "automation", automation["id"])
                 self.submit_automation(job, automation["id"])
 
+    def scheduler_diagnostics(self) -> dict[str, Any]:
+        with self._scheduler_status_lock:
+            return dict(self._scheduler_status)
+
+    def _update_scheduler_status(self, **values: Any) -> None:
+        with self._scheduler_status_lock:
+            self._scheduler_status.update(values)
+
+    def run_scheduler_iteration(self) -> None:
+        self.queue_due_automations()
+        with self.db.connection() as connection:
+            rows = connection.execute("SELECT * FROM publish_jobs WHERE status = 'ready' AND scheduled_for IS NOT NULL AND scheduled_for != ''").fetchall()
+        now = datetime.now(timezone.utc)
+        for row in rows:
+            scheduled_for = row["scheduled_for"]
+            try:
+                due_at = datetime.fromisoformat(scheduled_for.replace("Z", "+00:00"))
+                if due_at.tzinfo is None:
+                    due_at = due_at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": "Invalid scheduled_for timestamp", "claim_token": None, "claimed_at": None, "updated_at": now_iso()})
+                continue
+            if due_at > now:
+                continue
+            if not claim_publish_job(self.db, row["id"]):
+                continue
+            claimed = self.db.get("publish_jobs", "id", row["id"]) or dict(row)
+            attempt: dict[str, Any] | None = None
+            try:
+                attempt = begin_publish_attempt(self.db, row["id"], "scheduler")
+                remote_id = publish_job(self.db, claimed)
+                finalize_publish_success(self.db, row["id"], attempt, remote_id)
+            except Exception as error:
+                finalize_publish_failure(self.db, row["id"], attempt, error)
+
     def scheduler_loop(self) -> None:
         while not self.stop_event.wait(15):
-            self.queue_due_automations()
-            with self.db.connection() as connection:
-                rows = connection.execute("SELECT * FROM publish_jobs WHERE status = 'ready' AND scheduled_for IS NOT NULL AND scheduled_for != ''").fetchall()
-            now = datetime.now(timezone.utc)
-            for row in rows:
-                scheduled_for = row["scheduled_for"]
-                try:
-                    due_at = datetime.fromisoformat(scheduled_for.replace("Z", "+00:00"))
-                    if due_at.tzinfo is None:
-                        due_at = due_at.replace(tzinfo=timezone.utc)
-                except ValueError:
-                    self.db.update("publish_jobs", "id", row["id"], {"status": "failed", "error": "Invalid scheduled_for timestamp", "claim_token": None, "claimed_at": None, "updated_at": now_iso()})
-                    continue
-                if due_at > now:
-                    continue
-                if not claim_publish_job(self.db, row["id"]):
-                    continue
-                claimed = self.db.get("publish_jobs", "id", row["id"]) or dict(row)
-                attempt: dict[str, Any] | None = None
-                try:
-                    attempt = begin_publish_attempt(self.db, row["id"], "scheduler")
-                    remote_id = publish_job(self.db, claimed)
-                    finalize_publish_success(self.db, row["id"], attempt, remote_id)
-                except Exception as error:
-                    finalize_publish_failure(self.db, row["id"], attempt, error)
+            self._update_scheduler_status(status="running", last_run_at=now_iso())
+            try:
+                self.run_scheduler_iteration()
+            except Exception as error:
+                self._update_scheduler_status(status="degraded", last_error=str(error)[:1000], last_error_at=now_iso())
+            else:
+                self._update_scheduler_status(status="ok", last_success_at=now_iso())
 
 
 STATE: AppState | None = None
@@ -584,7 +612,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"ok": True, "version": "0.1.0", "database": str(self.app.settings.database_path)})
             return
         if path == "/api/diagnostics":
-            self.send_json(runtime_diagnostics())
+            self.send_json(runtime_diagnostics(self.app))
             return
         if path == "/api/dashboard":
             with self.app.db.connection() as connection:
