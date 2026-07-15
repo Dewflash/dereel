@@ -921,7 +921,7 @@ class Handler(BaseHTTPRequestHandler):
                 raise KeyError("Project not found")
             payload = self.read_json()
             platforms = list(payload.get("platforms") or ["youtube"])
-            jobs = create_publish_jobs(self.app.db, project, platforms, payload.get("scheduled_for"), payload.get("account_id"))
+            jobs = create_publish_jobs(self.app.db, project, platforms, payload.get("scheduled_for"), payload.get("account_id"), payload.get("account_ids"))
             self.send_json({"jobs": [publish_job_view(job) for job in jobs]}, HTTPStatus.CREATED)
             return
         match = re.fullmatch(r"/api/publishing/accounts/([^/]+)/check", path)

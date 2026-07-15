@@ -1091,6 +1091,50 @@ class CoreModelTests(unittest.TestCase):
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM publish_jobs WHERE project_id = ?", (project["id"],)).fetchone()[0], 0)
             self.assertFalse((output_dir / "publish-manifest.json").exists())
 
+    def test_publish_account_routing_is_explicit_with_first_account_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "youtube.mp4").write_bytes(b"youtube export")
+            (output_dir / "instagram.mp4").write_bytes(b"instagram export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Routed release", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            project = db.get("projects", "id", project["id"]) or project
+            for account in (
+                {"id": "youtube_first", "platform": "youtube", "label": "First YouTube", "created_at": "2026-01-01"},
+                {"id": "youtube_second", "platform": "youtube", "label": "Second YouTube", "created_at": "2026-01-02"},
+                {"id": "instagram_main", "platform": "instagram", "label": "Main Instagram", "created_at": "2026-01-01"},
+            ):
+                db.insert("publishing_accounts", {**account, "status": "not_connected", "config_json": "{}", "updated_at": account["created_at"]})
+
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                routed = create_publish_jobs(db, project, ["youtube", "instagram"], account_ids={"youtube": "youtube_second", "instagram": "instagram_main"})
+            self.assertEqual({job["platform"]: job["account_id"] for job in routed}, {"youtube": "youtube_second", "instagram": "instagram_main"})
+
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                partially_routed = create_publish_jobs(db, project, ["youtube", "instagram"], account_ids={"youtube": "youtube_first"})
+            self.assertEqual({job["platform"]: job["account_id"] for job in partially_routed}, {"youtube": "youtube_first", "instagram": "instagram_main"})
+
+            before_failed_update = {job["platform"]: job["account_id"] for job in partially_routed}
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                with self.assertRaisesRegex(ValueError, "Account does not match instagram"):
+                    create_publish_jobs(db, project, ["youtube", "instagram"], account_ids={"youtube": "youtube_first", "instagram": "youtube_first"})
+            with db.connection() as connection:
+                after_failed_update = {row["platform"]: row["account_id"] for row in connection.execute("SELECT platform, account_id FROM publish_jobs WHERE project_id = ?", (project["id"],)).fetchall()}
+            self.assertEqual(after_failed_update, before_failed_update)
+
+            fallback_output = root / "fallback-output"
+            fallback_output.mkdir()
+            (fallback_output / "youtube.mp4").write_bytes(b"youtube export")
+            fallback_project = create_project(db, {"name": "Fallback release", "theme": "cats"})
+            db.update("projects", "id", fallback_project["id"], {"status": "ready", "output_dir": str(fallback_output)})
+            fallback_project = db.get("projects", "id", fallback_project["id"]) or fallback_project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                fallback = create_publish_jobs(db, fallback_project, ["youtube"])
+            self.assertEqual(fallback[0]["account_id"], "youtube_first")
+
     def test_publish_integrity_backfill_upgrades_legacy_outbox_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

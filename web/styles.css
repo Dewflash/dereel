@@ -263,6 +263,9 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .platform-picker legend { padding: 0 4px; color: var(--dim); font-size: 9px; font-weight: 800; letter-spacing: .8px; text-transform: uppercase; }
 .platform-choice { display: flex; align-items: center; gap: 5px; margin: 0; color: var(--muted); font-size: 10px; font-weight: 700; }
 .platform-choice input { width: auto; accent-color: var(--accent); }
+.publish-account-picks { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 10px; margin-top: 12px; }
+.publish-account-picks label { margin: 0; }
+.publish-account-picks .form-note { align-self: end; margin: 0; }
 .publish-form-grid > .button { min-height: 42px; margin-bottom: 0; }
 .account-row { min-height: 68px; }
 .account-row .row-icon { color: var(--cyan); }

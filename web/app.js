@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
 let refreshInFlight = null;
 let refreshQueued = false;
 
@@ -318,6 +318,30 @@ function renderOutputs() {
   $("#output-list").innerHTML = ready.length ? ready.map((project) => { const validation = project.manifest?.validation || {}; const validationStatus = validation.status || "unverified"; const outputCount = Object.keys(validation.outputs || {}).length; const validateAction = validationStatus === "passed" ? "" : `<button class="button secondary" data-validate-output="${project.id}">Validate package</button>`; return `<article class="output-card"><div class="output-video"><video controls preload="metadata" src="/api/projects/${project.id}/output/final.mp4"></video></div><div class="output-info"><div class="output-status"><span class="eyebrow accent">${escapeHtml(project.style)} / 9:16</span>${statusPill(validationStatus)}</div><h3>${escapeHtml(project.title || project.name)}</h3><p>${escapeHtml(project.caption || project.theme)}</p><div class="output-files"><span class="file-chip">final.mp4</span><span class="file-chip">captions.srt</span><span class="file-chip">youtube.mp4</span><span class="file-chip">instagram.mp4</span><span class="file-chip">tiktok.mp4</span></div><p class="output-health">${outputCount ? `${outputCount} outputs validated` : "Output validation predates this check"}</p><div class="output-actions">${validateAction}<button class="button primary" data-publish-project="${project.id}">↗ Prepare publish</button><button class="button secondary" data-copy-path="${escapeHtml(project.output_dir)}">Copy package path</button></div></div></article>`; }).join("") : empty("No rendered outputs", "Your first finished edit will appear here.");
 }
 
+function renderPublishAccountPickers() {
+  const container = $("#publish-account-picks");
+  const form = $("#publish-form");
+  if (!container || !form) return;
+  const currentSelections = {};
+  $$(".publish-account-select", container).forEach((select) => { currentSelections[select.dataset.platform] = select.value; });
+  state.publishDraft.accountIds = { ...(state.publishDraft.accountIds || {}), ...currentSelections };
+  const selectedPlatforms = $$("input[name='platform']:checked", form).map((input) => input.value);
+  const selectedSet = new Set(selectedPlatforms);
+  Object.keys(state.publishDraft.accountIds).forEach((platform) => { if (!selectedSet.has(platform)) delete state.publishDraft.accountIds[platform]; });
+  container.innerHTML = selectedPlatforms.map((platform) => {
+    const accounts = state.accounts.filter((account) => account.platform === platform);
+    const selectedId = accounts.some((account) => account.id === state.publishDraft.accountIds[platform]) ? state.publishDraft.accountIds[platform] : "";
+    if (selectedId) state.publishDraft.accountIds[platform] = selectedId;
+    else delete state.publishDraft.accountIds[platform];
+    const label = state.platforms.find((item) => item.id === platform)?.label || platform;
+    const options = accounts.length ? [`<option value="">Auto-select first configured account</option>`, ...accounts.map((account) => {
+      const readiness = account.readiness?.ready ? "ready" : "needs setup";
+      return `<option value="${escapeHtml(account.id)}" ${account.id === selectedId ? "selected" : ""}>${escapeHtml(account.label)} · ${escapeHtml(readiness)}</option>`;
+    })].join("") : `<option value="">No account configured</option>`;
+    return `<label>${escapeHtml(label)} account<select class="publish-account-select" data-platform="${escapeHtml(platform)}" name="account_id_${escapeHtml(platform)}" ${accounts.length ? "" : "disabled"}>${options}</select></label>`;
+  }).join("");
+}
+
 function renderPublisher() {
   const projectSelect = $("#publish-project");
   if (projectSelect) {
@@ -338,11 +362,14 @@ function renderPublisher() {
     const status = readiness.ready && check.status === "passed" ? "verified" : readiness.ready && check.status === "failed" ? "check_failed" : readiness.ready ? account.status : "needs_configuration";
     return `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · ${escapeHtml(detail)}</small></div>${statusPill(status)}<button class="row-action" data-check-account="${escapeHtml(account.id)}">Check</button><button class="row-action" data-edit-account="${escapeHtml(account.id)}">Edit</button><button class="row-action danger-action" data-delete-account="${escapeHtml(account.id)}">Delete</button></div>`;
   }).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
+  renderPublishAccountPickers();
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
   $("#publish-list").innerHTML = state.publishingJobs.length ? state.publishingJobs.map((job) => {
     const sourceCount = Number(job.payload?.provenance?.asset_ids?.length || 0);
     const provenance = sourceCount ? ` · ${sourceCount} credited source${sourceCount === 1 ? "" : "s"}` : "";
     const processing = Boolean(job.processing);
+    const account = state.accounts.find((item) => item.id === job.account_id);
+    const accountDetail = account ? ` · ${account.label}` : " · no account selected";
     const attempts = state.publishAttempts[job.id];
     const history = attempts ? `<div class="publish-history">${attempts.length ? attempts.map((attempt) => `<div class="attempt-row"><div class="row-main"><strong>Attempt ${escapeHtml(attempt.attempt_number)}</strong><small>${escapeHtml(attempt.trigger)} · ${escapeHtml(attempt.started_at)}${attempt.finished_at ? ` · finished ${escapeHtml(attempt.finished_at)}` : ""}${attempt.remote_id ? ` · ${escapeHtml(attempt.remote_id)}` : ""}${attempt.error ? ` · ${escapeHtml(attempt.error)}` : ""}</small></div>${statusPill(attempt.status)}</div>`).join("") : empty("No attempts yet", "This outbox row has not reached a publisher adapter.")}</div>` : "";
     const historyButton = `<button class="row-action" data-publish-history="${job.id}">${attempts ? "Hide history" : "History"}</button>`;
@@ -352,7 +379,7 @@ function renderPublisher() {
     const markPosted = ["ready", "drafted"].includes(job.status) ? `<button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : "";
     const action = processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button>${markPosted}` : job.status === "drafted" ? markPosted : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : "";
     const scheduleEditor = state.publishScheduleJobId === job.id && editable ? `<div class="publish-schedule"><input class="publish-schedule-input" type="datetime-local" value="${escapeHtml(toDatetimeLocal(job.scheduled_for))}" /><button class="row-action" data-save-schedule="${job.id}">Save</button><button class="row-action" data-cancel-schedule="${job.id}">Close</button></div>` : "";
-    return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${scheduleButton}${cancelButton}${action}</div>${scheduleEditor}${history}</div>`;
+    return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)}${escapeHtml(accountDetail)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${scheduleButton}${cancelButton}${action}</div>${scheduleEditor}${history}</div>`;
   }).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
 }
 
@@ -537,7 +564,13 @@ async function submitPublish(form) {
     if (Number.isNaN(scheduledDate.getTime())) throw new Error("Schedule time is invalid");
     scheduledFor = scheduledDate.toISOString();
   }
-  const result = await api(`/api/projects/${projectId}/publish`, { method: "POST", body: JSON.stringify({ platforms, scheduled_for: scheduledFor }) });
+  const accountIds = {};
+  platforms.forEach((platform) => {
+    const accountId = String(data.get(`account_id_${platform}`) || "");
+    if (accountId) accountIds[platform] = accountId;
+  });
+  state.publishDraft.accountIds = accountIds;
+  const result = await api(`/api/projects/${projectId}/publish`, { method: "POST", body: JSON.stringify({ platforms, scheduled_for: scheduledFor, account_ids: accountIds }) });
   state.publishDraft.projectId = projectId;
   toast(`${result.jobs.length} package${result.jobs.length === 1 ? "" : "s"} prepared`);
   await refresh();
@@ -762,6 +795,7 @@ $("#automation-form").addEventListener("submit", (event) => { event.preventDefau
 $("#automation-source-mode").addEventListener("change", updateAutomationSourceFields);
 $("#project-form").addEventListener("submit", (event) => { event.preventDefault(); submitProject(event.currentTarget); });
 $("#publish-form").addEventListener("submit", (event) => { event.preventDefault(); submitPublish(event.currentTarget).catch((error) => toast(error.message, true)); });
+$("#publish-form").addEventListener("change", () => renderPublishAccountPickers());
 $("#account-form").addEventListener("submit", (event) => { event.preventDefault(); submitAccount(event.currentTarget); });
 $("#account-platform").addEventListener("change", updateAccountFields);
 $("#provider-search-form").addEventListener("submit", (event) => { event.preventDefault(); submitProviderSearch(event.currentTarget); });

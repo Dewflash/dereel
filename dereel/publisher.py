@@ -262,6 +262,7 @@ def create_publish_jobs(
     platforms: list[str],
     scheduled_for: str | None = None,
     account_id: str | None = None,
+    account_ids: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     if project.get("status") != "ready":
         raise ValueError("Project must be rendered and ready before creating publish jobs")
@@ -272,6 +273,23 @@ def create_publish_jobs(
     requested_platforms = list(dict.fromkeys(str(platform).strip().lower() for platform in platforms if str(platform).strip()))
     if not requested_platforms:
         raise ValueError("Choose at least one destination")
+    selected_account_ids: dict[str, str] = {}
+    if account_ids is not None:
+        if not isinstance(account_ids, dict):
+            raise ValueError("account_ids must be an object")
+        for platform, selected_id in account_ids.items():
+            normalized_platform = str(platform or "").strip().lower()
+            normalized_id = str(selected_id or "").strip()
+            if normalized_platform and normalized_id:
+                selected_account_ids[normalized_platform] = normalized_id
+        unknown_platforms = set(selected_account_ids) - set(requested_platforms)
+        if unknown_platforms:
+            raise ValueError("Account selection includes an unselected platform")
+    normalized_account_id = str(account_id or "").strip()
+    if normalized_account_id:
+        if len(requested_platforms) > 1:
+            raise ValueError("Use per-platform account_ids when selecting multiple platforms")
+        selected_account_ids.setdefault(requested_platforms[0], normalized_account_id)
     prepared: list[tuple[str, dict[str, Any]]] = []
     provenance = publish_provenance(project, output_dir)
     for platform in requested_platforms:
@@ -295,15 +313,14 @@ def create_publish_jobs(
             "provenance": provenance,
         }
         prepared.append((platform, payload))
-    if account_id and len(prepared) > 1:
-        with db.connection() as connection:
-            account = connection.execute("SELECT platform FROM publishing_accounts WHERE id = ?", (account_id,)).fetchone()
-        if not account or any(account["platform"] != platform for platform, _ in prepared):
-            raise ValueError("Account does not match every selected platform")
-
     jobs: list[dict[str, Any]] = []
     with db.connection() as connection:
         for platform, payload in prepared:
+            selected_account_id = selected_account_ids.get(platform)
+            if selected_account_id:
+                account = connection.execute("SELECT platform FROM publishing_accounts WHERE id = ?", (selected_account_id,)).fetchone()
+                if not account or account["platform"] != platform:
+                    raise ValueError(f"Account does not match {platform}")
             existing = connection.execute(
                 "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready') ORDER BY created_at DESC LIMIT 1",
                 (project["id"], platform),
@@ -322,19 +339,20 @@ def create_publish_jobs(
                     "provenance": payload["provenance"],
                 })
                 requested_schedule = normalized_schedule if scheduled_for is not None else str(existing_item.get("scheduled_for") or "")
-                connection.execute(
-                    "UPDATE publish_jobs SET payload_json = ?, scheduled_for = ?, updated_at = ? WHERE id = ?",
-                    (json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
-                )
+                if platform in selected_account_ids:
+                    connection.execute(
+                        "UPDATE publish_jobs SET account_id = ?, payload_json = ?, scheduled_for = ?, updated_at = ? WHERE id = ?",
+                        (selected_account_id, json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
+                    )
+                else:
+                    connection.execute(
+                        "UPDATE publish_jobs SET payload_json = ?, scheduled_for = ?, updated_at = ? WHERE id = ?",
+                        (json_dumps(existing_payload), requested_schedule, now_iso(), existing_item["id"]),
+                    )
                 refreshed = connection.execute("SELECT * FROM publish_jobs WHERE id = ?", (existing_item["id"],)).fetchone()
                 jobs.append(dict(refreshed) if refreshed else existing_item)
                 continue
-            selected_account_id = account_id
-            if selected_account_id:
-                account = connection.execute("SELECT platform FROM publishing_accounts WHERE id = ?", (selected_account_id,)).fetchone()
-                if not account or account["platform"] != platform:
-                    raise ValueError(f"Account does not match {platform}")
-            else:
+            if not selected_account_id:
                 account = connection.execute("SELECT id FROM publishing_accounts WHERE platform = ? ORDER BY created_at LIMIT 1", (platform,)).fetchone()
                 selected_account_id = account["id"] if account else None
             job_id = new_id("publish")
