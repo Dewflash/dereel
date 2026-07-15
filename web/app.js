@@ -1,4 +1,5 @@
 const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
+let refreshInFlight = null;
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -47,6 +48,16 @@ function showView(view) {
 }
 
 async function refresh() {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = refreshWorkspace();
+  try {
+    return await refreshInFlight;
+  } finally {
+    refreshInFlight = null;
+  }
+}
+
+async function refreshWorkspace() {
   const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing, automations, platforms, diagnostics] = await Promise.all([
     api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"), api("/api/automations"), api("/api/publishing/platforms"), api("/api/diagnostics"),
   ]);
