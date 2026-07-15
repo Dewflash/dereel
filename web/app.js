@@ -183,15 +183,22 @@ function renderAssetInspector() {
   node.innerHTML = `<div class="asset-inspector-header"><div><span class="eyebrow accent">SOURCE RECORD</span><h3>${escapeHtml(asset.title)}</h3><p>Inspect the origin and update the curation metadata without changing the source file.</p></div><button class="text-button" type="button" data-action="close-asset-inspector">Close</button></div><div class="inspector-grid"><div class="asset-detail-list"><div class="asset-detail"><span>Origin</span><strong>${escapeHtml(provenance.source_type || "unknown")}</strong></div><div class="asset-detail"><span>Platform</span><strong>${escapeHtml(provenance.platform || "local")}</strong></div><div class="asset-detail"><span>Automation</span><strong>${escapeHtml(provenance.automation_id || "Manual import")}</strong></div><div class="asset-detail"><span>Fingerprint</span><code title="${escapeHtml(provenance.fingerprint || "")}">${escapeHtml(fingerprint)}</code></div><div class="asset-detail"><span>Local file</span><code>${escapeHtml(provenance.local_path || "Reference only")}</code></div><div class="asset-detail"><span>Source URL</span>${sourceUrl ? `<a class="inspector-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : `<strong>${escapeHtml(asset.source_url || "No source URL")}</strong>`}</div><div class="asset-flags"><span>Review flags</span><div>${flags}</div></div></div><form class="inspector-form" id="asset-inspector-form" data-asset-id="${escapeHtml(asset.id)}"><label>Title<input name="title" value="${escapeHtml(asset.title)}" maxlength="160" required /></label><label>Tags<input name="tags" value="${escapeHtml((asset.tags || []).join(", "))}" placeholder="cute, funny, reaction" /></label><label>Source URL<input name="source_url" type="url" value="${escapeHtml(asset.source_url || "")}" placeholder="https://..." /></label><button class="button secondary full" type="submit">Save curation</button><p class="form-note">Rights decisions stay in the review queue. This form only edits descriptive metadata.</p></form></div>`;
 }
 
+function productionAudioAssets() {
+  return state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
+}
+
+function audioOptions(selectedId, emptyLabel) {
+  return `<option value="">${escapeHtml(emptyLabel)}</option>${productionAudioAssets().map((asset) => `<option value="${escapeHtml(asset.id)}" ${asset.id === selectedId ? "selected" : ""}>${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
+}
+
 function renderAudioSelect() {
   const selects = [$("#music-asset-select"), $("#sfx-asset-select"), $("#voiceover-asset-select"), $("#automation-music-select"), $("#automation-sfx-select"), $("#automation-voiceover-select")].filter(Boolean);
   if (!selects.length) return;
-  const audioAssets = state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
   const emptyLabels = { "music-asset-select": "No music bed", "sfx-asset-select": "No sound effect", "voiceover-asset-select": "No voiceover", "automation-music-select": "No music bed", "automation-sfx-select": "No sound effect", "automation-voiceover-select": "No voiceover" };
   selects.forEach((select) => {
     const current = select.value;
-    select.innerHTML = `<option value="">${emptyLabels[select.id] || "No audio"}</option>${audioAssets.map((asset) => `<option value="${asset.id}">${escapeHtml(asset.title)} · ${formatDuration(asset.duration)}</option>`).join("")}`;
-    if (audioAssets.some((asset) => asset.id === current)) select.value = current;
+    select.innerHTML = audioOptions(current, emptyLabels[select.id] || "No audio");
+    if (productionAudioAssets().some((asset) => asset.id === current)) select.value = current;
   });
 }
 
@@ -209,9 +216,15 @@ function renderInspector(project) {
   const clips = project.assets || [];
   const audio = project.audio || [];
   const manifest = project.manifest || {};
+  const settings = project.settings || {};
+  const track = (role) => audio.find((item) => item.role === role) || {};
+  const music = track("music");
+  const sfx = track("sfx");
+  const voiceover = track("voiceover");
   const clipMarkup = clips.map((clip, index) => { const clipOut = clip.out_point ?? clip.duration; const canMoveUp = index > 0; const canMoveDown = index < clips.length - 1; return `<div class="timeline-clip ${clip.enabled ? "" : "disabled"}" data-project-id="${project.id}" data-clip-id="${clip.asset_id}"><b>${String(index + 1).padStart(2, "0")}</b><strong title="${escapeHtml(clip.title)}">${escapeHtml(clip.title)}</strong><div class="clip-controls"><label>In<input class="clip-in" type="number" min="0" max="${clip.duration}" step="0.1" value="${clip.in_point}" /></label><label>Out<input class="clip-out" type="number" min="0.1" max="${clip.duration}" step="0.1" value="${clipOut}" /></label></div><small>${formatDuration(clipOut - clip.in_point)} · ${escapeHtml(clip.selected_by)}</small>${clip.note ? `<small class="clip-note">${escapeHtml(clip.note)}</small>` : ""}<div class="clip-actions"><button class="mini-button" data-save-clip="${clip.asset_id}">Save</button><button class="mini-button" data-toggle-clip="${clip.asset_id}" data-enabled="${clip.enabled ? "0" : "1"}">${clip.enabled ? "Disable" : "Enable"}</button><button class="mini-button" data-move-clip="${clip.asset_id}" data-direction="up" title="Move clip earlier" ${canMoveUp ? "" : "disabled"}>↑</button><button class="mini-button" data-move-clip="${clip.asset_id}" data-direction="down" title="Move clip later" ${canMoveDown ? "" : "disabled"}>↓</button><button class="mini-button danger" data-remove-clip="${clip.asset_id}" title="Remove clip">×</button></div></div>`; }).join("");
   const audioSummary = audio.length ? audio.map((track) => `${escapeHtml(track.role)}: ${escapeHtml(track.title)} @ ${track.start_time}s`).join(" · ") : "No added audio tracks";
-  $("#project-inspector").innerHTML = `<div class="inspector-header"><div><span class="eyebrow accent">EDIT INSPECTOR</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.theme)} · ${formatDuration(project.duration_target)} target · ${clips.length} clips</p></div><div class="inspector-actions"><button class="button secondary" data-plan-project="${project.id}">✦ Plan edit</button><button class="button primary" data-render-project="${project.id}">▶ Render</button></div></div><div class="timeline">${clips.length ? clipMarkup : empty("No clips selected", "Plan automatically or add clips from Scout.")}</div><div class="manifest"><strong>Planner</strong> ${escapeHtml(manifest.planner || "Manual")}${manifest.selected_duration ? ` · ${formatDuration(manifest.selected_duration)} selected` : ""}<div class="progress-track"><i style="width:${project.status === "ready" ? 100 : 0}%"></i></div></div><div class="sound-summary"><strong>Sound</strong><span>${audioSummary}</span></div>`;
+  const settingsMarkup = `<form class="project-settings" id="project-settings-form" data-project-id="${escapeHtml(project.id)}"><div class="panel-heading"><div><span class="eyebrow">EDIT BRIEF</span><h3>Project settings</h3></div><span class="count-label">${escapeHtml(project.status)}</span></div><div class="form-row"><label>Name<input name="name" value="${escapeHtml(project.name)}" maxlength="120" required /></label><label>Theme<input name="theme" value="${escapeHtml(project.theme)}" maxlength="180" required /></label></div><div class="form-row"><label>Target seconds<input name="duration_target" type="number" min="8" max="180" step="1" value="${escapeHtml(project.duration_target)}" /></label><label>Style<select name="style"><option value="kinetic" ${project.style === "kinetic" ? "selected" : ""}>Kinetic</option><option value="clean" ${project.style === "clean" ? "selected" : ""}>Clean captions</option><option value="narrated" ${project.style === "narrated" ? "selected" : ""}>Narrated</option></select></label></div><div class="form-row"><label>On-screen title<input name="title" value="${escapeHtml(project.title || project.name)}" maxlength="100" /></label><label>Caption / subtitle<input name="caption" value="${escapeHtml(project.caption || "")}" maxlength="500" /></label></div><div class="form-row treatment-options"><label class="check-row"><input name="add_title_card" type="checkbox" ${settings.add_title_card !== false ? "checked" : ""} />Apply title treatment</label><label class="check-row"><input name="write_captions" type="checkbox" ${settings.write_captions !== false ? "checked" : ""} />Write captions sidecar</label></div><div class="project-audio-grid"><label>Music bed<select name="music_asset_id">${audioOptions(music.asset_id || "", "No music bed")}</select></label><label>Music volume<input name="music_volume" type="range" min="0" max="1" step="0.05" value="${escapeHtml(music.volume ?? 0.16)}" /></label><label>Sound effect<select name="sfx_asset_id">${audioOptions(sfx.asset_id || "", "No sound effect")}</select></label><label>Effect start seconds<input name="sfx_start_time" type="number" min="0" max="3600" step="0.1" value="${escapeHtml(sfx.start_time ?? 0)}" /></label><label>Effect volume<input name="sfx_volume" type="range" min="0" max="1" step="0.05" value="${escapeHtml(sfx.volume ?? 0.55)}" /></label><label>Voiceover<select name="voiceover_asset_id">${audioOptions(voiceover.asset_id || "", "No voiceover")}</select></label><label>Voiceover start seconds<input name="voiceover_start_time" type="number" min="0" max="3600" step="0.1" value="${escapeHtml(voiceover.start_time ?? 0)}" /></label><label>Voiceover volume<input name="voiceover_volume" type="range" min="0" max="1" step="0.05" value="${escapeHtml(voiceover.volume ?? 1)}" /></label></div><button class="button secondary" type="submit">Save project settings</button><p class="form-note">Saving invalidates previous exports; render again before publishing.</p></form>`;
+  $("#project-inspector").innerHTML = `<div class="inspector-header"><div><span class="eyebrow accent">EDIT INSPECTOR</span><h3>${escapeHtml(project.name)}</h3><p>${escapeHtml(project.theme)} · ${formatDuration(project.duration_target)} target · ${clips.length} clips</p></div><div class="inspector-actions"><button class="button secondary" data-plan-project="${project.id}">✦ Plan edit</button><button class="button primary" data-render-project="${project.id}">▶ Render</button></div></div>${settingsMarkup}<div class="timeline"><div class="panel-heading"><div><span class="eyebrow">TIMELINE</span><h3>Clips</h3></div><span class="count-label">${clips.length} clips</span></div>${clips.length ? clipMarkup : empty("No clips selected", "Plan automatically or add clips from Scout.")}</div><div class="manifest"><strong>Planner</strong> ${escapeHtml(manifest.planner || "Manual")}${manifest.selected_duration ? ` · ${formatDuration(manifest.selected_duration)} selected` : ""}<div class="progress-track"><i style="width:${project.status === "ready" ? 100 : 0}%"></i></div></div><div class="sound-summary"><strong>Sound</strong><span>${audioSummary}</span></div>`;
 }
 
 function renderOutputs() {
@@ -511,6 +524,24 @@ async function submitProject(form) {
   } catch (error) { toast(error.message, true); }
 }
 
+async function submitProjectSettings(form) {
+  const button = $("button[type=submit]", form);
+  button.disabled = true;
+  try {
+    const data = new FormData(form);
+    const audioTracks = [];
+    const musicAssetId = String(data.get("music_asset_id") || "");
+    const sfxAssetId = String(data.get("sfx_asset_id") || "");
+    const voiceoverAssetId = String(data.get("voiceover_asset_id") || "");
+    if (musicAssetId) audioTracks.push({ asset_id: musicAssetId, role: "music", volume: Number(data.get("music_volume") || 0.16), start_time: 0 });
+    if (sfxAssetId) audioTracks.push({ asset_id: sfxAssetId, role: "sfx", volume: Number(data.get("sfx_volume") || 0.55), start_time: Number(data.get("sfx_start_time") || 0) });
+    if (voiceoverAssetId) audioTracks.push({ asset_id: voiceoverAssetId, role: "voiceover", volume: Number(data.get("voiceover_volume") || 1), start_time: Number(data.get("voiceover_start_time") || 0) });
+    await api(`/api/projects/${form.dataset.projectId}`, { method: "PATCH", body: JSON.stringify({ name: data.get("name"), theme: data.get("theme"), duration_target: Number(data.get("duration_target") || 35), style: data.get("style"), title: data.get("title"), caption: data.get("caption"), add_title_card: data.has("add_title_card"), write_captions: data.has("write_captions"), audio_tracks: audioTracks }) });
+    toast("Project settings saved; render again");
+    await refresh();
+  } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+}
+
 async function submitAccount(form) {
   try { const data = Object.fromEntries(new FormData(form)); await api("/api/publishing/accounts", { method: "POST", body: JSON.stringify(data) }); toast("Channel added"); form.reset(); await refresh(); } catch (error) { toast(error.message, true); }
 }
@@ -537,6 +568,7 @@ function handleAssetSelection(event) {
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleAssetSelection);
 document.addEventListener("submit", (event) => { if (event.target.id === "asset-inspector-form") { event.preventDefault(); submitAssetCuration(event.target); } });
+document.addEventListener("submit", (event) => { if (event.target.id === "project-settings-form") { event.preventDefault(); submitProjectSettings(event.target); } });
 $("#asset-search").addEventListener("input", (event) => { state.assetQuery = event.target.value; renderAssets(); });
 $("#asset-sort").addEventListener("change", (event) => { state.assetSort = event.target.value; renderAssets(); });
 $("#upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitUpload(event.currentTarget); });

@@ -116,7 +116,7 @@ def _ensure_project_editable(connection: Any, project_id: str) -> dict[str, Any]
 
 def _mark_project_dirty(connection: Any, project_id: str) -> None:
     connection.execute(
-        "UPDATE projects SET status = 'draft', updated_at = ? WHERE id = ? AND status = 'ready'",
+        "UPDATE projects SET status = CASE WHEN status IN ('ready', 'failed') THEN 'draft' ELSE status END, output_dir = '', manifest_json = '{}', updated_at = ? WHERE id = ?",
         (now_iso(), project_id),
     )
 
@@ -410,6 +410,52 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     return project_view(db, db.get("projects", "id", project_id) or {})
 
 
+def update_project(db: Database, project_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    audio_keys = {"audio_tracks", "music_asset_id", "music_volume", "sfx_asset_id", "sfx_volume", "sfx_start_time", "voiceover_asset_id", "voiceover_volume", "voiceover_start_time"}
+    current = db.get("projects", "id", project_id)
+    if not current:
+        raise KeyError("Project not found")
+    current_settings = json_loads(current.get("settings_json"), {})
+    if audio_keys.intersection(payload):
+        audio_tracks = _normalize_audio_tracks(db, payload)
+    else:
+        audio_tracks = [
+            {"asset_id": item["asset_id"], "role": item["role"], "volume": item["volume"], "start_time": item["start_time"]}
+            for item in get_project_audio(db, project_id)
+        ]
+    try:
+        duration_target = max(8, min(float(payload.get("duration_target", current["duration_target"])), 180))
+    except (TypeError, ValueError) as error:
+        raise ValueError("Target duration must be a number") from error
+    name = str(payload.get("name", current["name"]) or "Untitled reel").strip()[:120]
+    theme = str(payload.get("theme", current["theme"]) or "funny moments").strip()[:180]
+    title = str(payload.get("title", current["title"]) or name).strip()[:100]
+    caption = str(payload.get("caption", current["caption"]) or "").strip()[:500]
+    style = str(payload.get("style", current["style"]) or "kinetic").strip()[:40]
+    settings = {
+        **current_settings,
+        "add_title_card": _as_bool(payload.get("add_title_card"), _as_bool(current_settings.get("add_title_card"), True)),
+        "write_captions": _as_bool(payload.get("write_captions"), _as_bool(current_settings.get("write_captions"), True)),
+        "audio_tracks": audio_tracks,
+        "music_asset_id": next((track["asset_id"] for track in audio_tracks if track["role"] == "music"), ""),
+        "music_volume": next((track["volume"] for track in audio_tracks if track["role"] == "music"), 0.16),
+    }
+    now = now_iso()
+    with db.connection() as connection:
+        _ensure_project_editable(connection, project_id)
+        connection.execute(
+            "UPDATE projects SET name = ?, theme = ?, duration_target = ?, style = ?, status = 'draft', title = ?, caption = ?, output_dir = '', manifest_json = '{}', settings_json = ?, updated_at = ? WHERE id = ?",
+            (name, theme, duration_target, style, title, caption, json_dumps(settings), now, project_id),
+        )
+        connection.execute("DELETE FROM project_audio WHERE project_id = ?", (project_id,))
+        for track in audio_tracks:
+            connection.execute(
+                "INSERT INTO project_audio(project_id, asset_id, role, volume, start_time) VALUES (?, ?, ?, ?, ?)",
+                (project_id, track["asset_id"], track["role"], track["volume"], track["start_time"]),
+            )
+    return project_view(db, db.get("projects", "id", project_id) or {})
+
+
 def _bounded_float(value: Any, default: float, minimum: float, maximum: float) -> float:
     try:
         parsed = float(value)
@@ -516,10 +562,12 @@ def selection_reason(breakdown: dict[str, Any]) -> str:
 
 
 def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None = None) -> dict[str, Any]:
-    project = db.get("projects", "id", project_id)
-    if not project:
-        raise KeyError("Project not found")
-    db.update("projects", "id", project_id, {"status": "planning", "updated_at": now_iso()})
+    with db.connection() as connection:
+        project = _ensure_project_editable(connection, project_id)
+        connection.execute(
+            "UPDATE projects SET status = 'planning', output_dir = '', manifest_json = '{}', updated_at = ? WHERE id = ?",
+            (now_iso(), project_id),
+        )
     theme_tokens = {token.lower() for token in project["theme"].replace(",", " ").split() if len(token) > 2}
     candidate_filter = ""
     candidate_params: list[str] = []

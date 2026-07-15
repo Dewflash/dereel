@@ -12,10 +12,10 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
-from dereel.publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
+from dereel.publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft
 from dereel.config import Settings
 from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
 
@@ -331,6 +331,27 @@ class CoreModelTests(unittest.TestCase):
             project = create_project(db, {"name": "No treatment", "theme": "quiet", "add_title_card": "false", "write_captions": 0})
             self.assertEqual((project["settings"]["add_title_card"], project["settings"]["write_captions"]), (False, False))
 
+    def test_project_settings_update_replaces_audio_and_invalidates_old_exports(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            music = create_asset(db, kind="media", title="Music", local_path=str(root / "music.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 8, "has_audio": True})
+            project = create_project(db, {"name": "Before", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(root / "old-output"), "manifest_json": json.dumps({"validation": {"status": "passed"}})})
+            updated = update_project(db, project["id"], {"name": "After", "theme": "cats funny", "title": "Cats in trouble", "caption": "Perfect timing.", "duration_target": 42, "style": "clean", "add_title_card": False, "write_captions": True, "audio_tracks": [{"asset_id": music["id"], "role": "music", "volume": 0.2}]})
+            stored = db.get("projects", "id", project["id"])
+            self.assertEqual((updated["name"], updated["duration_target"], updated["style"]), ("After", 42.0, "clean"))
+            self.assertEqual((stored["status"], stored["output_dir"], stored["manifest_json"]), ("draft", "", "{}"))
+            self.assertEqual([(track["asset_id"], track["role"], track["volume"]) for track in updated["audio"]], [(music["id"], "music", 0.2)])
+            self.assertFalse(updated["settings"]["add_title_card"])
+
+    def test_publishing_requires_a_fresh_ready_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Draft release", "theme": "cats"})
+            with self.assertRaisesRegex(ValueError, "must be rendered and ready"):
+                create_publish_jobs(db, project, ["youtube"])
+
     def test_timeline_moves_clips_and_marks_ready_projects_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -349,10 +370,11 @@ class CoreModelTests(unittest.TestCase):
             ]
             for asset in assets:
                 add_project_asset(db, project["id"], asset["id"], {})
-            db.update("projects", "id", project["id"], {"status": "ready"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(root / "old-output"), "manifest_json": json.dumps({"validation": {"status": "passed"}})})
             move_project_asset(db, project["id"], assets[2]["id"], "up")
             self.assertEqual([item["asset_id"] for item in get_project_assets(db, project["id"])], [assets[0]["id"], assets[2]["id"], assets[1]["id"]])
             self.assertEqual(db.get("projects", "id", project["id"])["status"], "draft")
+            self.assertEqual((db.get("projects", "id", project["id"])["output_dir"], db.get("projects", "id", project["id"])["manifest_json"]), ("", "{}"))
             update_project_asset(db, project["id"], assets[0]["id"], {"in_point": 0.5, "out_point": 3.5})
             self.assertEqual(db.get("projects", "id", project["id"])["status"], "draft")
             move_project_asset(db, project["id"], assets[0]["id"], "up")

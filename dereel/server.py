@@ -48,6 +48,7 @@ from .pipeline import (
     render_project,
     set_job,
     update_project_asset,
+    update_project,
     validate_project_output,
 )
 from .publisher import account_view, begin_publish_attempt, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view
@@ -182,8 +183,11 @@ class AppState:
         return self.db.get("jobs", "id", job["id"]) or job
 
     def queue_render(self, project_id: str) -> dict[str, Any]:
-        if not self.db.get("projects", "id", project_id):
+        project = self.db.get("projects", "id", project_id)
+        if not project:
             raise KeyError("Project not found")
+        if project["status"] in {"planning", "rendering"}:
+            raise ValueError("Project is already processing")
         with self.db.connection() as connection:
             active = connection.execute(
                 "SELECT id FROM jobs WHERE kind = 'render' AND project_id = ? AND status IN ('queued', 'running') LIMIT 1",
@@ -669,6 +673,10 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/automations/([^/]+)", path)
         if match:
             self.send_json({"automation": update_automation(self.app.db, match.group(1), self.read_json())})
+            return
+        match = re.fullmatch(r"/api/projects/([^/]+)", path)
+        if match:
+            self.send_json({"project": update_project(self.app.db, match.group(1), self.read_json())})
             return
         if path == "/api/assets/bulk":
             payload = self.read_json()

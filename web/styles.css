@@ -173,6 +173,12 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .library-tools input { width: 220px; }
 .library-tools select { width: 145px; }
 
+.project-settings { border-bottom: 1px solid var(--line); margin-bottom: 18px; padding-bottom: 18px; }
+.project-settings .panel-heading { margin-bottom: 14px; }
+.project-settings .form-row label { margin-bottom: 11px; }
+.project-audio-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; margin-bottom: 4px; }
+.project-audio-grid label { margin-bottom: 7px; }
+
 .forge-layout { margin-bottom: 18px; }
 .forge-project-list { max-height: 485px; overflow: auto; }
 .project-inspector { min-height: 220px; }
@@ -287,6 +293,7 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
   .inspector-form { border-top: 1px solid var(--line); border-left: 0; padding-top: 18px; padding-left: 0; }
   .audio-form-row { grid-template-columns: 1fr; }
   .audio-track-grid { grid-template-columns: 1fr; }
+  .project-audio-grid { grid-template-columns: 1fr 1fr; }
   .publish-form-grid { grid-template-columns: 1fr; }
   .output-card { grid-template-columns: 110px minmax(0, 1fr); gap: 13px; padding: 11px; }
   .output-info h3 { font-size: 15px; }

@@ -88,6 +88,8 @@ def create_publish_jobs(
     scheduled_for: str | None = None,
     account_id: str | None = None,
 ) -> list[dict[str, Any]]:
+    if project.get("status") != "ready":
+        raise ValueError("Project must be rendered and ready before creating publish jobs")
     output_dir = Path(project.get("output_dir") or "")
     if not output_dir.is_dir():
         raise ValueError("Render the project before creating publish jobs")
