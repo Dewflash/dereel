@@ -760,6 +760,7 @@ class CoreModelTests(unittest.TestCase):
             complete_publish_job(db, job_id, "failed", error="Still unavailable")
             marked = mark_publish_job(db, job_id, "manual-1")
             self.assertEqual((marked["status"], marked["remote_id"]), ("published", "manual-1"))
+            self.assertEqual([(item["trigger"], item["status"], item["remote_id"]) for item in list_publish_attempts(db, job_id)], [("manual", "published", "manual-1")])
             with self.assertRaisesRegex(ValueError, "already published"):
                 mark_publish_job(db, job_id)
 

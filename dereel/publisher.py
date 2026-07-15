@@ -368,13 +368,23 @@ def force_publish_success(db: Database, job_id: str, attempt_id: str, remote_id:
 
 
 def mark_publish_job(db: Database, job_id: str, remote_id: str = "manual") -> dict[str, Any]:
+    timestamp = now_iso()
+    remote = remote_id or "manual"
     with db.connection() as connection:
         result = connection.execute(
             "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND status IN ('ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
-            (remote_id or "manual", now_iso(), job_id),
+            (remote, timestamp, job_id),
         )
-    if result.rowcount != 1:
-        raise ValueError("Publish job is already published or currently being processed")
+        if result.rowcount != 1:
+            raise ValueError("Publish job is already published or currently being processed")
+        next_number = connection.execute(
+            "SELECT COALESCE(MAX(attempt_number), 0) + 1 FROM publish_attempts WHERE publish_job_id = ?",
+            (job_id,),
+        ).fetchone()[0]
+        connection.execute(
+            "INSERT INTO publish_attempts (id, publish_job_id, attempt_number, trigger, status, remote_id, error, started_at, finished_at, updated_at) VALUES (?, ?, ?, 'manual', 'published', ?, '', ?, ?, ?)",
+            (new_id("attempt"), job_id, next_number, remote, timestamp, timestamp, timestamp),
+        )
     return db.get("publish_jobs", "id", job_id) or {}
 
 
