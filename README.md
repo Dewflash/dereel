@@ -11,13 +11,14 @@ DeReel is a local-first short-form video studio. It has two connected surfaces:
 ## Run locally
 
 ```bash
-cd /Users/kevinyongcj/programming/dereel
+cd /Users/kevinyongcj/Programming/dereel
+python3 -m pip install -e .
 python3 -m dereel
 ```
 
 Open <http://127.0.0.1:8765>. FFmpeg and ffprobe must be available on `PATH`.
 
-The app uses only Python's standard library for its first local runtime. SQLite lives in `data/dereel.sqlite3`, imported originals live in `data/library/originals/`, and rendered packages live in `outputs/`.
+The app uses Python's standard library plus Pillow for local text-overlay rendering. SQLite lives in `data/dereel.sqlite3`, imported originals live in `data/library/originals/`, and rendered packages live in `outputs/`.
 
 Optional provider search uses the official provider APIs. Set a key in the shell before starting DeReel:
 
