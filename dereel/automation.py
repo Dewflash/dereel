@@ -461,8 +461,9 @@ def _publish_job_platforms(db: Database, project_id: str) -> set[str]:
     return {str(row["platform"]) for row in rows}
 
 
-def _prepare_automation_publish_jobs(db: Database, automation: dict[str, Any], project_id: str, fallback_project: dict[str, Any] | None = None) -> list[dict[str, Any]]:
-    if not automation["platforms"]:
+def _prepare_automation_publish_jobs(db: Database, automation: dict[str, Any], project_id: str, fallback_project: dict[str, Any] | None = None, platforms: list[str] | None = None) -> list[dict[str, Any]]:
+    requested_platforms = platforms if platforms is not None else automation["platforms"]
+    if not requested_platforms:
         return []
     scheduled_for = ""
     if automation["publish_delay_minutes"] > 0:
@@ -470,7 +471,8 @@ def _prepare_automation_publish_jobs(db: Database, automation: dict[str, Any], p
     project = db.get("projects", "id", project_id) or fallback_project
     if not project:
         raise KeyError("Automation project not found")
-    return create_publish_jobs(db, project, automation["platforms"], scheduled_for, account_ids=automation["account_ids"])
+    account_ids = {platform: account_id for platform, account_id in automation["account_ids"].items() if platform in requested_platforms}
+    return create_publish_jobs(db, project, requested_platforms, scheduled_for, account_ids=account_ids)
 
 
 def run_automation(
@@ -500,7 +502,8 @@ def run_automation(
         covered_platforms = _publish_job_platforms(db, last_project["id"])
         if not automation["platforms"] or set(automation["platforms"]).issubset(covered_platforms):
             return {"status": "idle", "project_id": last_project["id"], "scan": report, "message": "No new sources"}
-        publish_jobs = _prepare_automation_publish_jobs(db, automation, last_project["id"])
+        missing_platforms = [platform for platform in automation["platforms"] if platform not in covered_platforms]
+        publish_jobs = _prepare_automation_publish_jobs(db, automation, last_project["id"], platforms=missing_platforms)
         return {"status": "rendered", "project_id": last_project["id"], "output_dir": last_project["output_dir"], "publish_jobs": publish_jobs, "scan": report}
     if not asset_ids:
         return {"status": "no_sources", "scan": report}

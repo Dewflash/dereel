@@ -569,7 +569,7 @@ class CoreModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db = Database(root / "test.sqlite3")
-            automation = create_automation(db, {"name": "Retry release", "watch_dir": str(root), "platforms": ["youtube"]})
+            automation = create_automation(db, {"name": "Retry release", "watch_dir": str(root), "platforms": ["youtube", "instagram"]})
             video_path = root / "video.mp4"
             video_path.write_bytes(b"video")
             video = create_asset(
@@ -592,10 +592,12 @@ class CoreModelTests(unittest.TestCase):
             output_dir.mkdir()
             (output_dir / "final.mp4").write_bytes(b"rendered")
             db.update("projects", "id", project_id, {"status": "ready", "output_dir": str(output_dir)})
+            db.insert("publish_jobs", {"id": "failed-youtube", "project_id": project_id, "account_id": None, "platform": "youtube", "status": "failed", "scheduled_for": "", "remote_id": "", "error": "Upload failed", "claim_token": None, "claimed_at": None, "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
             with patch("dereel.automation.scan_watch_folder", return_value={"found": 0, "imported": [], "duplicates": [], "errors": []}), patch("dereel.automation.create_publish_jobs", return_value=[]) as publisher:
                 retried = run_automation(db, automation["id"], root / "library", root / "outputs")
             self.assertEqual((retried["status"], retried["project_id"]), ("rendered", project_id))
             self.assertEqual(publisher.call_count, 1)
+            self.assertEqual(publisher.call_args.args[2], ["instagram"])
             with db.connection() as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
 
