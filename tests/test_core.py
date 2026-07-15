@@ -13,7 +13,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed, import_provider_asset
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
@@ -494,6 +494,20 @@ class CoreModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "content risk requires review"):
                 add_project_asset(db, project["id"], flagged["id"], {})
             self.assertEqual(review_content_asset(db, flagged["id"], "safe")["content_risk"]["status"], "safe")
+
+    def test_bulk_content_review_is_atomic_and_records_each_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            first = create_asset(db, kind="media", title="Knife clip", local_path=str(root / "first.mp4"), rights_status="owned_distribution", metadata={"duration": 2})
+            second = create_asset(db, kind="media", title="Explosion clip", local_path=str(root / "second.mp4"), rights_status="owned_distribution", metadata={"duration": 2})
+            reference = create_asset(db, kind="reference", title="Gun reference", source_url="https://example.com/gun")
+            with self.assertRaisesRegex(ValueError, "cannot receive a content review"):
+                bulk_review_content_assets(db, [first["id"], reference["id"]], "safe", "Mixed selection")
+            self.assertEqual(list_content_reviews(db, first["id"]), [])
+            reviewed = bulk_review_content_assets(db, [first["id"], second["id"]], "safe", "Batch checked")
+            self.assertEqual([asset["content_risk"]["status"] for asset in reviewed], ["safe", "safe"])
+            self.assertEqual([list_content_reviews(db, asset["id"])[0]["note"] for asset in reviewed], ["Batch checked", "Batch checked"])
 
     def test_automation_audio_controls_persist_and_feed_new_projects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

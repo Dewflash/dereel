@@ -37,6 +37,7 @@ from .pipeline import (
     audit_asset_health,
     asset_view,
     bulk_review_assets,
+    bulk_review_content_assets,
     create_asset,
     create_job,
     create_project,
@@ -978,6 +979,13 @@ class Handler(BaseHTTPRequestHandler):
             if "scheduled_for" not in payload:
                 raise ValueError("scheduled_for is required")
             self.send_json({"job": reschedule_publish_job(self.app.db, match.group(1), str(payload.get("scheduled_for") or ""))})
+            return
+        if path == "/api/assets/content-review/bulk":
+            payload = self.read_json()
+            asset_ids = payload.get("ids")
+            if not isinstance(asset_ids, list):
+                raise ValueError("ids must be a list")
+            self.send_json({"assets": bulk_review_content_assets(self.app.db, asset_ids, str(payload.get("verdict") or ""), str(payload.get("note") or ""))})
             return
         if path == "/api/assets/bulk":
             payload = self.read_json()

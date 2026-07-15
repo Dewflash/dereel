@@ -155,7 +155,7 @@ function renderAssets() {
   const assets = libraryAssets();
   $("#asset-search").value = state.assetQuery;
   $$(".filter-tab").forEach((item) => item.classList.toggle("active", item.dataset.filter === state.assetFilter));
-  const selectable = new Set(state.visibleAssets.filter(isReviewableAsset).map((asset) => asset.id));
+  const selectable = new Set(state.visibleAssets.filter(isSelectableAsset).map((asset) => asset.id));
   state.selectedAssets = new Set([...state.selectedAssets].filter((id) => selectable.has(id)));
   const count = assets.length === state.visibleAssets.length ? `${assets.length}` : `${assets.length} of ${state.visibleAssets.length}`;
   $("#asset-count").textContent = `${count} asset${assets.length === 1 ? "" : "s"}`;
@@ -171,8 +171,13 @@ function isReviewableAsset(asset) {
 
 function renderReviewToolbar() {
   const count = state.selectedAssets.size;
-  $("#selected-asset-count").textContent = `${count} selected`;
-  $$('[data-bulk-action]').forEach((button) => { button.disabled = count === 0; });
+  const selected = [...state.selectedAssets].map((id) => state.assets.find((asset) => asset.id === id)).filter(Boolean);
+  const rightsCount = selected.filter(isReviewableAsset).length;
+  const contentCount = selected.filter(isContentReviewableAsset).length;
+  const mixed = rightsCount > 0 && contentCount > 0;
+  $("#selected-asset-count").textContent = mixed ? count + " selected · choose one review type" : count + " selected";
+  $$('[data-bulk-action]').forEach((button) => { button.disabled = rightsCount === 0 || mixed; });
+  $$('[data-bulk-content-action]').forEach((button) => { button.disabled = contentCount === 0 || mixed; });
 }
 
 function renderProviderResults(results = []) {
@@ -180,9 +185,17 @@ function renderProviderResults(results = []) {
   $("#provider-results").innerHTML = results.length ? results.map((item) => `<article class="provider-result"><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong><small>${escapeHtml(item.provider)} · ${formatDuration(item.duration)} · ${item.width || "?"}x${item.height || "?"}</small><div class="asset-actions"><button class="mini-button" data-provider-save="${escapeHtml(item.provider_id)}">Save reference</button><button class="mini-button" data-provider-import="${escapeHtml(item.provider_id)}">Import for review</button></div></article>`).join("") : "";
 }
 
+function isContentReviewableAsset(asset) {
+  return asset.kind === "media" && Boolean(asset.local_path) && asset.content_risk?.status === "flagged";
+}
+
+function isSelectableAsset(asset) {
+  return isReviewableAsset(asset) || isContentReviewableAsset(asset);
+}
+
 function assetCard(asset) {
   const preview = asset.local_path ? (String(asset.mime_type || "").startsWith("audio/") ? "♫" : `<video src="/api/assets/${asset.id}/stream" muted preload="metadata"></video>`) : "↗";
-  const selector = isReviewableAsset(asset) ? `<label class="asset-select" title="Select for batch review"><input type="checkbox" data-asset-select="${asset.id}" ${state.selectedAssets.has(asset.id) ? "checked" : ""} /></label>` : "";
+  const selector = isSelectableAsset(asset) ? `<label class="asset-select" title="Select for batch review"><input type="checkbox" data-asset-select="${asset.id}" ${state.selectedAssets.has(asset.id) ? "checked" : ""} /></label>` : "";
   const tags = (asset.tags || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
   const canApprove = isReviewableAsset(asset);
   const healthBlocked = ["missing", "invalid", "changed"].includes(asset.health?.status);
@@ -533,7 +546,9 @@ async function submitPublish(form) {
 async function submitBulkReview(action) {
   if (!state.selectedAssets.size) { toast("Select at least one asset", true); return; }
   const labels = { approve_licensed: "Provider licenses approved", approve_owned: "Ownership attested", reject: "Assets rejected" };
-  const reviewedIds = [...state.selectedAssets];
+  const selected = [...state.selectedAssets].map((id) => state.assets.find((asset) => asset.id === id)).filter(Boolean);
+  const reviewedIds = selected.filter(isReviewableAsset).map((asset) => asset.id);
+  if (!reviewedIds.length || reviewedIds.length !== selected.length) { toast("Select only rights-review assets for this action", true); return; }
   const note = $("#bulk-review-note")?.value || "";
   const result = await api("/api/assets/bulk", { method: "PATCH", body: JSON.stringify({ ids: reviewedIds, action, note }) });
   reviewedIds.forEach((id) => { delete state.assetReviews[id]; });
@@ -543,19 +558,34 @@ async function submitBulkReview(action) {
   await refresh();
 }
 
+async function submitBulkContentReview(verdict) {
+  if (!state.selectedAssets.size) { toast("Select at least one asset", true); return; }
+  const selected = [...state.selectedAssets].map((id) => state.assets.find((asset) => asset.id === id)).filter(Boolean);
+  const reviewedIds = selected.filter(isContentReviewableAsset).map((asset) => asset.id);
+  if (!reviewedIds.length || reviewedIds.length !== selected.length) { toast("Select only content-risk assets for this action", true); return; }
+  const note = $("#bulk-review-note")?.value || "";
+  const result = await api("/api/assets/content-review/bulk", { method: "PATCH", body: JSON.stringify({ ids: reviewedIds, verdict, note }) });
+  reviewedIds.forEach((id) => { delete state.contentReviews[id]; });
+  if ($("#bulk-review-note")) $("#bulk-review-note").value = "";
+  state.selectedAssets.clear();
+  toast(result.assets.length + " asset" + (result.assets.length === 1 ? "" : "s") + " content decision recorded");
+  await refresh();
+}
+
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, healthAsset, reviewHistory, contentReviewHistory, contentReview, contentVerdict, reviewAsset, reviewAction, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, checkAccount, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, reviewAutomation, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, bulkContentAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, healthAsset, reviewHistory, contentReviewHistory, contentReview, contentVerdict, reviewAsset, reviewAction, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, checkAccount, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, reviewAutomation, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
     if (action === "health-check") { const ids = [...state.selectedAssets]; const result = await api("/api/assets/health-check", { method: "POST", body: JSON.stringify(ids.length ? { ids } : {}) }); toast(`Checked ${result.report.checked} media: ${result.report.passed} healthy, ${result.report.missing + result.report.invalid + result.report.changed} flagged`); await refresh(); return; }
-    if (action === "select-visible") { libraryAssets().filter(isReviewableAsset).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
+    if (action === "select-visible") { const selectable = state.assetFilter === "content_review" ? isContentReviewableAsset : isReviewableAsset; libraryAssets().filter(selectable).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
     if (action === "clear-selection") { state.selectedAssets.clear(); renderAssets(); return; }
     if (action === "clear-automation-runs") { state.selectedAutomationId = ""; state.automationRuns = []; renderAutomationRuns(); return; }
     if (action === "close-asset-inspector") { state.inspectedAssetId = ""; renderAssets(); return; }
     if (bulkAction) { await submitBulkReview(bulkAction); return; }
+    if (bulkContentAction) { await submitBulkContentReview(bulkContentAction); return; }
     if (action === "cancel-automation") { resetAutomationForm(); return; }
     if (action === "cancel-account-edit") { resetAccountForm(); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }

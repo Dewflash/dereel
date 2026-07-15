@@ -573,25 +573,53 @@ def review_content_asset(db: Database, asset_id: str, verdict: str, note: str = 
         if row["kind"] != "media" or not row["local_path"]:
             raise ValueError("Only local media can receive a content review")
         current = dict(row)
-        scan = _content_scan(current)
         timestamp = now_iso()
-        review = {
-            "verdict": verdict,
-            "categories": scan["categories"],
-            "matches": scan["matches"],
-            "signature": scan["signature"],
-            "basis": "metadata",
-            "note": str(note or "")[:300],
-            "reviewed_at": timestamp,
-        }
-        analysis = _asset_analysis(current)
-        analysis["content_review"] = review
-        connection.execute("UPDATE assets SET analysis_json = ?, updated_at = ? WHERE id = ?", (json_dumps(analysis), timestamp, asset_id))
-        connection.execute(
-            "INSERT INTO asset_content_reviews(id, asset_id, verdict, categories_json, matches_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (new_id("content_review"), asset_id, verdict, json_dumps(scan["categories"]), json_dumps(scan["matches"]), str(note or "")[:300], timestamp),
-        )
+        _record_content_review(connection, current, verdict, note, timestamp)
     return asset_view(db.get("assets", "id", asset_id) or {})
+
+
+def _record_content_review(connection: Any, row: dict[str, Any], verdict: str, note: str, timestamp: str) -> None:
+    scan = _content_scan(row)
+    review = {
+        "verdict": verdict,
+        "categories": scan["categories"],
+        "matches": scan["matches"],
+        "signature": scan["signature"],
+        "basis": "metadata",
+        "note": str(note or "")[:300],
+        "reviewed_at": timestamp,
+    }
+    analysis = _asset_analysis(row)
+    analysis["content_review"] = review
+    connection.execute("UPDATE assets SET analysis_json = ?, updated_at = ? WHERE id = ?", (json_dumps(analysis), timestamp, row["id"]))
+    connection.execute(
+        "INSERT INTO asset_content_reviews(id, asset_id, verdict, categories_json, matches_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (new_id("content_review"), row["id"], verdict, json_dumps(scan["categories"]), json_dumps(scan["matches"]), str(note or "")[:300], timestamp),
+    )
+
+
+def bulk_review_content_assets(db: Database, asset_ids: list[str], verdict: str, note: str = "") -> list[dict[str, Any]]:
+    if verdict not in {"safe", "flagged"}:
+        raise ValueError("Unsupported content review verdict")
+    normalized_ids = list(dict.fromkeys(str(asset_id).strip() for asset_id in asset_ids if str(asset_id).strip()))
+    if not normalized_ids:
+        raise ValueError("Select at least one asset")
+    if len(normalized_ids) > 200:
+        raise ValueError("Bulk content review is limited to 200 assets per action")
+    placeholders = ", ".join("?" for _ in normalized_ids)
+    with db.connection() as connection:
+        rows = connection.execute(f"SELECT * FROM assets WHERE id IN ({placeholders})", normalized_ids).fetchall()
+        if len(rows) != len(normalized_ids):
+            raise KeyError("One or more selected assets no longer exist")
+        invalid = [dict(row) for row in rows if row["kind"] != "media" or not row["local_path"]]
+        if invalid:
+            raise ValueError(f"{len(invalid)} selected asset(s) cannot receive a content review")
+        timestamp = now_iso()
+        for row in rows:
+            _record_content_review(connection, dict(row), verdict, note, timestamp)
+        updated = connection.execute(f"SELECT * FROM assets WHERE id IN ({placeholders})", normalized_ids).fetchall()
+    by_id = {row["id"]: asset_view(dict(row)) for row in updated}
+    return [by_id[asset_id] for asset_id in normalized_ids]
 
 
 def list_content_reviews(db: Database, asset_id: str, limit: int = 30) -> list[dict[str, Any]]:
