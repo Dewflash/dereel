@@ -120,7 +120,7 @@ function libraryAssets() {
   const query = state.assetQuery.trim().toLowerCase();
   const filtered = state.visibleAssets.filter((asset) => {
     if (!query) return true;
-    return [asset.title, asset.platform, asset.source_url, ...(asset.tags || []), ...(asset.review_flags || [])].join(" ").toLowerCase().includes(query);
+    return [asset.id, asset.automation_id, asset.title, asset.platform, asset.source_url, ...(asset.tags || []), ...(asset.review_flags || [])].join(" ").toLowerCase().includes(query);
   });
   return filtered.sort((left, right) => {
     if (state.assetSort === "shortest") return Number(left.duration || Infinity) - Number(right.duration || Infinity);
@@ -133,6 +133,8 @@ function libraryAssets() {
 
 function renderAssets() {
   const assets = libraryAssets();
+  $("#asset-search").value = state.assetQuery;
+  $$(".filter-tab").forEach((item) => item.classList.toggle("active", item.dataset.filter === state.assetFilter));
   const selectable = new Set(state.visibleAssets.filter(isReviewableAsset).map((asset) => asset.id));
   state.selectedAssets = new Set([...state.selectedAssets].filter((id) => selectable.has(id)));
   const count = assets.length === state.visibleAssets.length ? `${assets.length}` : `${assets.length} of ${state.visibleAssets.length}`;
@@ -315,7 +317,8 @@ function renderAutomationRuns() {
     const scanSummary = `found ${Number(scan.found || 0)} · imported ${Number((scan.imported || []).length)} · duplicates ${Number((scan.duplicates || []).length)} · errors ${Number((scan.errors || []).length)}`;
     const resultSummary = run.error || run.result?.message || (run.project_id ? `project ${run.project_id}` : "no project");
     const openProject = run.project_id ? `<button class="row-action" data-project="${escapeHtml(run.project_id)}">Open project</button>` : "";
-    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(run.started_at.replace("T", " "))} · ${escapeHtml(run.id)}</strong><small>${escapeHtml(scanSummary)} · ${escapeHtml(resultSummary)}</small></div>${statusPill(run.status)}${openProject}</div>`;
+    const reviewImported = (scan.imported || []).length ? `<button class="row-action" data-review-automation="${escapeHtml(run.automation_id)}">Review imported</button>` : "";
+    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(run.started_at.replace("T", " "))} · ${escapeHtml(run.id)}</strong><small>${escapeHtml(scanSummary)} · ${escapeHtml(resultSummary)}</small></div>${statusPill(run.status)}${reviewImported}${openProject}</div>`;
   }).join("") : empty("No runs yet", "Run this recipe to build its first report.");
   panel.hidden = false;
   panel.innerHTML = `<div class="panel-heading"><div><span class="eyebrow accent">RUN HISTORY</span><h3>${escapeHtml(automation.name)}</h3><span class="count-label">${runs.length} recorded run${runs.length === 1 ? "" : "s"}</span></div><button class="text-button" type="button" data-action="clear-automation-runs">Close</button></div><div class="automation-list">${runRows}</div>`;
@@ -462,7 +465,7 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, healthAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, healthAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, reviewAutomation, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -481,6 +484,7 @@ async function handleClick(event) {
     if (approveOwned) { await api(`/api/assets/${approveOwned}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Ownership attested"); await refresh(); return; }
     if (editAutomationId) { editAutomation(editAutomationId); return; }
     if (inspectAutomation) { await inspectAutomationRuns(inspectAutomation); return; }
+    if (reviewAutomation) { state.assetFilter = "review"; state.assetQuery = reviewAutomation; state.visibleAssets = (await api("/api/assets?view=review")).assets || []; showView("scout"); renderAssets(); return; }
     if (runAutomation) { await api(`/api/automations/${runAutomation}/run`, { method: "POST", body: "{}" }); toast("Automation queued"); await refresh(); return; }
     if (retryJob) { await api(`/api/jobs/${retryJob}/retry`, { method: "POST", body: "{}" }); toast("Job retry queued"); await refresh(); return; }
     if (toggleAutomation) { const automation = state.automations.find((item) => item.id === toggleAutomation); if (automation) { await api(`/api/automations/${toggleAutomation}`, { method: "PATCH", body: JSON.stringify({ enabled: !automation.enabled }) }); toast(automation.enabled ? "Automation paused" : "Automation enabled"); await refresh(); } return; }
