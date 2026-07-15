@@ -4,6 +4,7 @@ import hashlib
 import json
 import mimetypes
 import os
+import shutil
 import subprocess
 from functools import lru_cache
 from pathlib import Path
@@ -111,6 +112,160 @@ def quote_concat_path(path: Path) -> str:
     return str(path).replace("\\", "\\\\").replace("'", "'\\''")
 
 
+def _font_path(bold: bool) -> Path | None:
+    configured = str(os.getenv("DEREEL_FONT_PATH") or "").strip()
+    candidates = [Path(configured)] if configured else []
+    if bold:
+        candidates.extend(
+            [
+                Path("/System/Library/Fonts/Supplemental/Arial Bold.ttf"),
+                Path("/Library/Fonts/Arial Bold.ttf"),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+                Path("/usr/local/share/fonts/DejaVuSans-Bold.ttf"),
+            ]
+        )
+    else:
+        candidates.extend(
+            [
+                Path("/System/Library/Fonts/Supplemental/Arial.ttf"),
+                Path("/Library/Fonts/Arial.ttf"),
+                Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                Path("/usr/local/share/fonts/DejaVuSans.ttf"),
+            ]
+        )
+    return next((candidate for candidate in candidates if candidate.is_file()), None)
+
+
+def _load_overlay_font(size: int, bold: bool) -> Any | None:
+    try:
+        from PIL import ImageFont
+    except ImportError:
+        return None
+    path = _font_path(bold)
+    if not path:
+        return None
+    try:
+        return ImageFont.truetype(str(path), size)
+    except OSError:
+        return None
+
+
+def pillow_text_overlay_available() -> bool:
+    return bool(_load_overlay_font(16, True) and _load_overlay_font(16, False))
+
+
+def text_overlay_backend() -> str:
+    filters = available_filters()
+    if "drawtext" in filters:
+        return "drawtext"
+    if "overlay" in filters and pillow_text_overlay_available():
+        return "pillow"
+    return "unavailable"
+
+
+def _wrap_overlay_text(draw: Any, text: str, font: Any, max_width: int) -> str:
+    words = " ".join(text.split()).split(" ")
+    lines: list[str] = []
+    current = ""
+    for word in words:
+        candidate = f"{current} {word}".strip()
+        if draw.textlength(word, font=font) <= max_width and (not current or draw.textlength(candidate, font=font) <= max_width):
+            current = candidate
+            continue
+        if current:
+            lines.append(current)
+            current = ""
+        fragment = ""
+        for character in word:
+            candidate = fragment + character
+            if fragment and draw.textlength(candidate, font=font) > max_width:
+                lines.append(fragment)
+                fragment = character
+            else:
+                fragment = candidate
+        current = fragment
+    if current:
+        lines.append(current)
+    return "\n".join(lines)
+
+
+def _pillow_text_overlay(source: Path, destination: Path, title: str, subtitle: str, style: str) -> bool:
+    try:
+        from PIL import Image, ImageDraw
+    except ImportError:
+        return False
+    metadata = probe(source)
+    width = max(int(metadata["width"]), 1)
+    height = max(int(metadata["height"]), 1)
+    preset = TEXT_STYLE_PRESETS[normalize_text_style(style)]
+    title_font = _load_overlay_font(int(preset["title_size"]), True)
+    subtitle_font = _load_overlay_font(int(preset["subtitle_size"]), False)
+    if not title_font or not subtitle_font:
+        return False
+    overlay_path = destination.with_suffix(".overlay.png")
+    canvas = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    try:
+        def draw_copy(text: str, font: Any, spacing: int, padding: int, alpha: str, x_value: str, y_value: str) -> None:
+            normalized = text.strip()
+            if not normalized:
+                return
+            wrapped = _wrap_overlay_text(draw, normalized[:140], font, max(width - 160, 240))
+            bbox = draw.multiline_textbbox((0, 0), wrapped, font=font, spacing=spacing)
+            text_width = bbox[2] - bbox[0]
+            text_height = bbox[3] - bbox[1]
+            box_width = text_width + (padding * 2)
+            box_height = text_height + (padding * 2)
+            x = (width - box_width) // 2 if x_value == "(w-text_w)/2" else int(x_value)
+            y = height - int(y_value[2:]) if y_value.startswith("h-") else int(y_value)
+            x = max(0, min(x, width - box_width))
+            y = max(0, min(y, height - box_height))
+            color = (0, 0, 0, max(0, min(int(float(alpha) * 255), 255)))
+            draw.rounded_rectangle((x, y, x + box_width, y + box_height), radius=min(18, padding), fill=color)
+            draw.multiline_text((x + padding - bbox[0], y + padding - bbox[1]), wrapped, font=font, fill="white", spacing=spacing)
+
+        draw_copy(title, title_font, int(preset["title_spacing"]), int(preset["title_border"]), preset["title_alpha"], preset["title_x"], preset["title_y"])
+        draw_copy(subtitle, subtitle_font, int(preset["subtitle_spacing"]), int(preset["subtitle_border"]), preset["subtitle_alpha"], preset["subtitle_x"], preset["subtitle_y"])
+        canvas.save(overlay_path)
+        command = [
+            "ffmpeg",
+            "-y",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-i",
+            str(source),
+            "-loop",
+            "1",
+            "-i",
+            str(overlay_path),
+            "-filter_complex",
+            "[0:v][1:v]overlay=0:0:format=auto:shortest=1[v]",
+            "-map",
+            "[v]",
+            "-map",
+            "0:a?",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "fast",
+            "-crf",
+            "21",
+            "-c:a",
+            "copy",
+            "-shortest",
+            "-movflags",
+            "+faststart",
+            str(destination),
+        ]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=600, check=False)
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or "FFmpeg could not add the Pillow text overlay")
+        return True
+    finally:
+        overlay_path.unlink(missing_ok=True)
+
+
 def normalize_segment(source: Path, destination: Path, in_point: float, duration: float) -> None:
     destination.parent.mkdir(parents=True, exist_ok=True)
     source_has_audio = bool(probe(source)["has_audio"])
@@ -202,13 +357,14 @@ def concat_segments(segments: list[Path], destination: Path) -> None:
 
 
 def add_text_overlay(source: Path, destination: Path, title: str, subtitle: str = "", style: str = "kinetic") -> bool:
-    if "drawtext" not in available_filters():
-        # Some system FFmpeg builds omit libfreetype/drawtext. The edit is still valid;
+    backend = text_overlay_backend()
+    if backend == "unavailable":
+        # Some system FFmpeg builds omit text filters. The edit is still valid;
         # callers receive a false result and can record that title treatment was skipped.
-        import shutil
-
         shutil.copy2(source, destination)
         return False
+    if backend == "pillow":
+        return _pillow_text_overlay(source, destination, title, subtitle, style)
     title_file = destination.with_suffix(".title.txt")
     subtitle_file = destination.with_suffix(".subtitle.txt")
     title_file.write_text(title.strip()[:80])

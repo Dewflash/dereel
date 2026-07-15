@@ -5,7 +5,7 @@ DeReel is a local-first short-form video studio. It has two connected surfaces:
 - **Scout** stores discovery references and imports media that is owned, licensed, public-domain, or otherwise cleared for production.
 - **Scout** can search Pexels and Pixabay when `PEXELS_API_KEY` or `PIXABAY_API_KEY` is configured. Provider imports are constrained to approved media hosts and enter `pending_review`.
 - **Automations** can watch a local folder, copy new videos into the library, deduplicate them, pause for rights review, and resume the same batch after approval.
-- **Forge** plans a themed edit, normalizes clips with FFmpeg, mixes optional cleared music, SFX, and voiceover tracks, adds title treatment, creates platform-shaped exports, and writes a manifest to `outputs/`.
+- **Forge** plans a themed edit, normalizes clips with FFmpeg, mixes optional cleared music, SFX, and voiceover tracks, adds title treatment through FFmpeg drawtext or a Pillow overlay fallback, creates platform-shaped exports, and writes a manifest to `outputs/`.
 - **Publisher** creates an outbox package for YouTube Shorts, Instagram Reels, and TikTok. Account OAuth integrations are intentionally represented as explicit adapters rather than browser login automation.
 
 ## Run locally

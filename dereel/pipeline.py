@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import add_text_overlay, concat_segments, mix_audio_tracks, normalize_segment, normalize_text_style, sha256_file, validate_audio, validate_video, write_caption_track
+from .media import add_text_overlay, concat_segments, mix_audio_tracks, normalize_segment, normalize_text_style, sha256_file, text_overlay_backend, validate_audio, validate_video, write_caption_track
 
 
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
@@ -978,7 +978,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         if not add_title_card:
             shutil.copy2(base, titled)
         base.unlink(missing_ok=True)
-        treatment_mode = "drawtext" if overlay_applied else "disabled" if not add_title_card else "unavailable"
+        treatment_mode = text_overlay_backend() if overlay_applied else "disabled" if not add_title_card else "unavailable"
         progress(0.9, "Applied title and caption treatment" if overlay_applied else "Rendered without optional text filter")
         for platform in ("youtube", "instagram", "tiktok"):
             destination = output_dir / f"{platform}.mp4"

@@ -104,7 +104,7 @@ function renderDiagnostics(diagnostics) {
   const checks = [
     ["FFmpeg", Boolean(media.ffmpeg), media.ffmpeg_path || "Binary not found"],
     ["FFprobe", Boolean(media.ffprobe), media.ffprobe_path || "Binary not found"],
-    ["Text overlay", Boolean(media.drawtext), media.drawtext ? "drawtext available" : "Optional; captions still render"],
+    ["Text overlay", Boolean(media.text_overlay), media.drawtext ? "FFmpeg drawtext available" : media.pillow ? "Pillow overlay fallback available" : "Optional; captions still render"],
     ...(diagnostics.providers || []).map((provider) => [provider.label, Boolean(provider.configured), provider.configured ? "API key detected" : "API key not configured"]),
   ];
   node.innerHTML = checks.map(([label, ok, detail]) => `<div class="diagnostic-row"><div class="row-main"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></div>${statusPill(ok ? "ready" : "not_configured")}</div>`).join("");

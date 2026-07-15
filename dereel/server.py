@@ -30,7 +30,7 @@ from .automation import (
     set_automation_running,
     update_automation,
 )
-from .media import available_filters, safe_extension, sha256_file, validate_audio, validate_video
+from .media import available_filters, pillow_text_overlay_available, safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
     add_project_asset,
     analyze_asset,
@@ -98,11 +98,14 @@ def runtime_diagnostics(state: Any | None = None) -> dict[str, Any]:
     ffmpeg_path = shutil.which("ffmpeg") or ""
     ffprobe_path = shutil.which("ffprobe") or ""
     filters = available_filters() if ffmpeg_path else set()
+    pillow_overlay = "overlay" in filters and pillow_text_overlay_available()
     diagnostics: dict[str, Any] = {
         "media": {
             "ffmpeg": bool(ffmpeg_path),
             "ffprobe": bool(ffprobe_path),
             "drawtext": "drawtext" in filters,
+            "pillow": pillow_overlay,
+            "text_overlay": "drawtext" in filters or pillow_overlay,
             "ffmpeg_path": ffmpeg_path,
             "ffprobe_path": ffprobe_path,
         },

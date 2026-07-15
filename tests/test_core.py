@@ -12,7 +12,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from dereel.db import Database
-from dereel.media import add_text_overlay, sha256_file, validate_audio, validate_video
+from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
@@ -926,6 +926,21 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn(":x=80:y=140", filter_graph)
             self.assertIn("fontsize=34", filter_graph)
 
+    def test_pillow_overlay_fallback_builds_transparent_overlay_command(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            destination = root / "pillow.mp4"
+            source.write_bytes(b"source")
+            with patch("dereel.media.available_filters", return_value={"overlay"}), patch("dereel.media.probe", return_value={"width": 1080, "height": 1920}), patch("dereel.media.subprocess.run", return_value=type("Result", (), {"returncode": 0, "stderr": ""})()) as runner:
+                self.assertEqual(text_overlay_backend(), "pillow")
+                self.assertTrue(add_text_overlay(source, destination, "Title", "Subtitle", "narrated"))
+            command = runner.call_args.args[0]
+            self.assertIn("-filter_complex", command)
+            filter_graph = command[command.index("-filter_complex") + 1]
+            self.assertIn("overlay=0:0:format=auto:shortest=1", filter_graph)
+            self.assertIn("-map", command)
+
     def test_platform_export_bounds_match_current_reel_limits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             media = Path(directory) / "instagram.mp4"
@@ -1390,8 +1405,8 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(result["manifest"]["validation"]["status"], "passed")
             self.assertEqual(set(result["manifest"]["validation"]["outputs"]), {"master", "youtube", "instagram", "tiktok"})
             self.assertEqual(result["manifest"]["inputs"][0]["provenance"]["source_type"], "local_import")
-            self.assertIn(result["manifest"]["title_treatment"]["mode"], {"drawtext", "unavailable"})
-            self.assertEqual(result["manifest"]["title_treatment"]["applied"], result["manifest"]["title_treatment"]["mode"] == "drawtext")
+            self.assertIn(result["manifest"]["title_treatment"]["mode"], {"drawtext", "pillow", "unavailable"})
+            self.assertEqual(result["manifest"]["title_treatment"]["applied"], result["manifest"]["title_treatment"]["mode"] in {"drawtext", "pillow"})
             self.assertEqual(result["manifest"]["captions"]["mode"], "static_project_caption")
             validated = validate_project_output(db, project["id"])
             self.assertEqual(validated["status"], "ready")
