@@ -449,6 +449,25 @@ def delete_asset(db: Database, asset_id: str) -> None:
             pass
 
 
+def cleanup_pending_asset(db: Database, asset_id: str, fallback_path: str = "") -> None:
+    local_path = fallback_path
+    with db.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        row = connection.execute("SELECT local_path, rights_status FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if row and row["rights_status"] != "pending_review":
+            return
+        if row:
+            result = connection.execute("DELETE FROM assets WHERE id = ? AND rights_status = 'pending_review'", (asset_id,))
+            if result.rowcount != 1:
+                return
+            local_path = str(row["local_path"] or fallback_path)
+    if local_path:
+        try:
+            Path(local_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def analyze_asset(db: Database, asset_id: str) -> dict[str, Any]:
     asset = db.get("assets", "id", asset_id)
     if not asset:

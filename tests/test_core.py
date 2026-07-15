@@ -13,7 +13,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, create_asset, create_job, create_project, delete_asset, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, cleanup_pending_asset, create_asset, create_job, create_project, delete_asset, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed, import_provider_asset, import_provider_assets
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
@@ -992,6 +992,24 @@ class CoreModelTests(unittest.TestCase):
                 delete_asset(db, automation_audio["id"])
             self.assertTrue(automation_audio_path.exists())
             self.assertIsNotNone(db.get("automations", "id", automation["id"]))
+
+    def test_pending_asset_cleanup_only_removes_unapproved_records(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            pending_path = root / "pending.mp4"
+            pending_path.write_bytes(b"pending")
+            pending = create_asset(db, kind="media", title="Pending", local_path=str(pending_path), rights_status="pending_review", metadata={"duration": 2})
+            cleanup_pending_asset(db, pending["id"])
+            self.assertIsNone(db.get("assets", "id", pending["id"]))
+            self.assertFalse(pending_path.exists())
+
+            approved_path = root / "approved.mp4"
+            approved_path.write_bytes(b"approved")
+            approved = create_asset(db, kind="media", title="Approved", local_path=str(approved_path), rights_status="owned_distribution", metadata={"duration": 2})
+            cleanup_pending_asset(db, approved["id"])
+            self.assertIsNotNone(db.get("assets", "id", approved["id"]))
+            self.assertTrue(approved_path.exists())
 
     def test_timeline_moves_clips_and_marks_ready_projects_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

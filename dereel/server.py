@@ -38,6 +38,7 @@ from .pipeline import (
     asset_view,
     bulk_review_assets,
     bulk_review_content_assets,
+    cleanup_pending_asset,
     create_asset,
     create_job,
     create_project,
@@ -816,8 +817,12 @@ class Handler(BaseHTTPRequestHandler):
                     asset = review_asset(self.app.db, asset["id"], action, f"Upload attestation: {requested_rights.replace('_', ' ')}")
             except Exception:
                 if created_asset_id:
-                    self.app.db.delete("assets", "id", created_asset_id)
-                destination.unlink(missing_ok=True)
+                    cleanup_pending_asset(self.app.db, created_asset_id, str(destination))
+                else:
+                    try:
+                        destination.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 raise
             finally:
                 close_multipart_files(files)
@@ -859,8 +864,12 @@ class Handler(BaseHTTPRequestHandler):
                     asset = review_asset(self.app.db, asset["id"], action, f"Audio upload attestation: {requested_rights.replace('_', ' ')}")
             except Exception:
                 if created_asset_id:
-                    self.app.db.delete("assets", "id", created_asset_id)
-                destination.unlink(missing_ok=True)
+                    cleanup_pending_asset(self.app.db, created_asset_id, str(destination))
+                else:
+                    try:
+                        destination.unlink(missing_ok=True)
+                    except OSError:
+                        pass
                 raise
             finally:
                 close_multipart_files(files)

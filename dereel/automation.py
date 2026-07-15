@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import VIDEO_EXTENSIONS, safe_extension, sha256_file, validate_video
-from .pipeline import PRODUCTION_RIGHTS, create_asset, create_project, plan_project, production_health_error, render_project, review_asset
+from .pipeline import PRODUCTION_RIGHTS, cleanup_pending_asset, create_asset, create_project, plan_project, production_health_error, render_project, review_asset
 from .publisher import create_publish_jobs
 from .scout import import_provider_asset, search as search_provider
 
@@ -379,7 +379,7 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
             imported.append(asset)
         except Exception as error:
             if created_asset_id:
-                _cleanup_pending_asset(db, created_asset_id, str(destination or ""))
+                cleanup_pending_asset(db, created_asset_id, str(destination or ""))
             elif destination:
                 try:
                     destination.unlink(missing_ok=True)
@@ -390,7 +390,7 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
 
 
 def _cleanup_provider_asset(db: Database, asset: dict[str, Any]) -> None:
-    _cleanup_pending_asset(db, str(asset.get("id") or ""), str(asset.get("local_path") or ""))
+    cleanup_pending_asset(db, str(asset.get("id") or ""), str(asset.get("local_path") or ""))
 
 
 def scan_provider_sources(db: Database, automation: dict[str, Any], originals_dir: Path) -> dict[str, Any]:
@@ -450,25 +450,6 @@ def _automation_asset_ids(db: Database, automation_id: str) -> list[str]:
     with db.connection() as connection:
         rows = connection.execute("SELECT id FROM assets WHERE automation_id = ? AND kind = 'media' ORDER BY created_at DESC", (automation_id,)).fetchall()
     return [str(row[0]) for row in rows]
-
-
-def _cleanup_pending_asset(db: Database, asset_id: str, fallback_path: str = "") -> None:
-    local_path = fallback_path
-    with db.connection() as connection:
-        connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute("SELECT local_path, rights_status FROM assets WHERE id = ?", (asset_id,)).fetchone()
-        if row and row["rights_status"] != "pending_review":
-            return
-        if row:
-            result = connection.execute("DELETE FROM assets WHERE id = ? AND rights_status = 'pending_review'", (asset_id,))
-            if result.rowcount != 1:
-                return
-            local_path = str(row["local_path"] or fallback_path)
-    if local_path:
-        try:
-            Path(local_path).unlink(missing_ok=True)
-        except OSError:
-            pass
 
 
 def run_automation(
