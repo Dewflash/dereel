@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, set_job, update_project_asset
+from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, score_breakdown, set_job, update_project_asset
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
@@ -210,6 +210,9 @@ class CoreModelTests(unittest.TestCase):
         matching = {"title": "cat surprise", "tags_json": '["cats","funny"]', "duration": 6, "width": 1080, "height": 1920, "has_audio": 1}
         weak = {"title": "landscape", "tags_json": "[]", "duration": 45, "width": 1920, "height": 1080, "has_audio": 0}
         self.assertGreater(score_asset(matching, {"cat", "funny"}), score_asset(weak, {"cat", "funny"}))
+        breakdown = score_breakdown(matching, {"cat", "funny"})
+        self.assertEqual(breakdown["theme_matches"], ["cat", "funny"])
+        self.assertEqual(breakdown["duration_bucket"], "short")
 
     def test_provider_import_only_allows_known_https_hosts(self) -> None:
         self.assertTrue(_host_allowed("pexels", "https://videos.pexels.com/video.mp4"))
@@ -337,6 +340,8 @@ class CoreModelTests(unittest.TestCase):
             project = create_project(db, {"name": "Planner check", "theme": "funny music", "duration_target": 5})
             planned = plan_project(db, project["id"])
             self.assertEqual([clip["asset_id"] for clip in planned["assets"]], [video["id"]])
+            self.assertIn("score", planned["assets"][0]["note"])
+            self.assertIn("theme", planned["manifest"]["selected"][0]["reason"])
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_creates_vertical_outputs_and_manifest(self) -> None:

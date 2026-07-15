@@ -369,22 +369,57 @@ def _normalize_audio_tracks(db: Database, payload: dict[str, Any]) -> list[dict[
     return tracks
 
 
-def score_asset(asset: dict[str, Any], theme_tokens: set[str]) -> float:
+def score_breakdown(asset: dict[str, Any], theme_tokens: set[str]) -> dict[str, Any]:
     tags = set(json_loads(asset.get("tags_json"), []))
     title_tokens = set(asset.get("title", "").lower().replace("-", " ").split())
     duration = float(asset.get("duration") or 0)
-    score = 0.0
-    score += len(theme_tokens & (tags | title_tokens)) * 5
+    theme_matches = sorted(theme_tokens & (tags | title_tokens))
+    theme_score = len(theme_matches) * 5
+    duration_score = 0
+    duration_bucket = "neutral"
     if 2 <= duration <= 12:
-        score += 4
+        duration_score = 4
+        duration_bucket = "short"
     elif duration > 30:
-        score -= 2
+        duration_score = -2
+        duration_bucket = "long"
+    vertical_score = 0
+    vertical = False
     if asset.get("width") and asset.get("height"):
         ratio = asset["width"] / max(asset["height"], 1)
-        score += 2 if ratio < 1.2 else 0
-    if asset.get("has_audio"):
-        score += 1
-    return score
+        vertical = ratio < 1.2
+        vertical_score = 2 if vertical else 0
+    audio_score = 1 if asset.get("has_audio") else 0
+    return {
+        "total": theme_score + duration_score + vertical_score + audio_score,
+        "theme_matches": theme_matches,
+        "theme_score": theme_score,
+        "duration_bucket": duration_bucket,
+        "duration_score": duration_score,
+        "vertical": vertical,
+        "vertical_score": vertical_score,
+        "has_audio": bool(asset.get("has_audio")),
+        "audio_score": audio_score,
+    }
+
+
+def score_asset(asset: dict[str, Any], theme_tokens: set[str]) -> float:
+    return float(score_breakdown(asset, theme_tokens)["total"])
+
+
+def selection_reason(breakdown: dict[str, Any]) -> str:
+    reasons: list[str] = []
+    if breakdown.get("theme_matches"):
+        reasons.append("theme: " + ", ".join(breakdown["theme_matches"]))
+    if breakdown.get("duration_bucket") == "short":
+        reasons.append("short clip")
+    elif breakdown.get("duration_bucket") == "long":
+        reasons.append("long clip")
+    if breakdown.get("vertical"):
+        reasons.append("vertical")
+    if breakdown.get("has_audio"):
+        reasons.append("has audio")
+    return f"score {float(breakdown.get('total') or 0):.1f} · " + (" · ".join(reasons) if reasons else "baseline match")
 
 
 def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None = None) -> dict[str, Any]:
@@ -408,25 +443,28 @@ def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None 
                 "SELECT * FROM assets WHERE local_path IS NOT NULL AND (mime_type IS NULL OR mime_type NOT LIKE 'audio/%') AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved')" + candidate_filter + " ORDER BY created_at DESC",
                 candidate_params,
             ).fetchall()
-    candidates = sorted((dict(row) for row in rows), key=lambda item: score_asset(item, theme_tokens), reverse=True)
+    candidates = [{"asset": dict(row), "breakdown": score_breakdown(dict(row), theme_tokens)} for row in rows]
+    candidates.sort(key=lambda item: item["breakdown"]["total"], reverse=True)
     selected: list[dict[str, Any]] = []
     total = 0.0
     target = float(project["duration_target"])
-    for candidate in candidates:
+    for candidate_item in candidates:
         if total >= target or len(selected) >= 12:
             break
+        candidate = candidate_item["asset"]
         duration = float(candidate.get("duration") or 0)
         if duration <= 0:
             continue
         clip_duration = min(duration, max(1.5, target - total))
-        selected.append({"asset": candidate, "duration": round(clip_duration, 3), "score": score_asset(candidate, theme_tokens)})
+        breakdown = candidate_item["breakdown"]
+        selected.append({"asset": candidate, "duration": round(clip_duration, 3), "score": breakdown["total"], "breakdown": breakdown, "reason": selection_reason(breakdown)})
         total += clip_duration
     with db.connection() as connection:
         connection.execute("DELETE FROM project_assets WHERE project_id = ?", (project_id,))
         for index, item in enumerate(selected):
             connection.execute(
                 "INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, note, enabled, selected_by) VALUES (?, ?, ?, ?, ?, ?, 1, 'auto')",
-                (project_id, item["asset"]["id"], index, 0, item["duration"], f"Theme match {item['score']:.1f}"),
+                (project_id, item["asset"]["id"], index, 0, item["duration"], item["reason"]),
             )
     manifest = {
         "planner": "deterministic-theme-v1",
@@ -434,7 +472,7 @@ def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None 
         "target_duration": target,
         "selected_duration": round(total, 3),
         "candidate_count": len(candidates),
-        "selected": [{"asset_id": item["asset"]["id"], "score": item["score"], "duration": item["duration"]} for item in selected],
+        "selected": [{"asset_id": item["asset"]["id"], "score": item["score"], "duration": item["duration"], "reason": item["reason"], "breakdown": item["breakdown"]} for item in selected],
     }
     db.update(
         "projects",
