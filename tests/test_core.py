@@ -841,6 +841,35 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual((stored["status"], stored["output_dir"], stored["manifest_json"]), ("failed", "", "{}"))
             self.assertTrue((old_output / "final.mp4").is_file())
 
+    def test_render_rechecks_source_fingerprint_before_encoding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "clip.mp4"
+            source.write_bytes(b"original")
+            original_fingerprint = sha256_file(source)
+            db = Database(root / "test.sqlite3")
+            asset = create_asset(
+                db,
+                kind="media",
+                title="Replaced clip",
+                local_path=str(source),
+                mime_type="video/mp4",
+                rights_status="owned_distribution",
+                metadata={"duration": 2, "width": 720, "height": 1280, "fingerprint": original_fingerprint},
+            )
+            source.write_bytes(b"replacement")
+            project = create_project(db, {"name": "Live source gate", "theme": "clip"})
+            with db.connection() as connection:
+                connection.execute(
+                    "INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 2, 1, 'test')",
+                    (project["id"], asset["id"]),
+                )
+            with patch("dereel.pipeline.validate_video", return_value={"duration": 2, "file_size": 11, "width": 720, "height": 1280, "has_audio": False}):
+                with self.assertRaisesRegex(ValueError, "changed since import"):
+                    render_project(db, project["id"], root / "outputs", lambda _progress, _message: None)
+            stored_asset = db.get("assets", "id", asset["id"]) or {}
+            self.assertEqual(json.loads(stored_asset["analysis_json"])["health"]["status"], "changed")
+
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")

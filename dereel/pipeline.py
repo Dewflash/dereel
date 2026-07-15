@@ -908,6 +908,16 @@ def _normalize_audio_tracks(db: Database, payload: dict[str, Any]) -> list[dict[
     return tracks
 
 
+def _recheck_production_asset(db: Database, asset_id: str, label: str) -> dict[str, Any]:
+    asset = check_asset_health(db, asset_id)
+    if asset.get("rights_status") not in PRODUCTION_RIGHTS or asset.get("status") not in {"ready", "approved"}:
+        raise ValueError(f"Asset '{label}' is no longer cleared for production")
+    health_error = production_health_error(asset)
+    if health_error:
+        raise ValueError(f"Asset '{label}' is not ready for production: {health_error}")
+    return asset
+
+
 def score_breakdown(asset: dict[str, Any], theme_tokens: set[str]) -> dict[str, Any]:
     tags = set(json_loads(asset.get("tags_json"), []))
     title_tokens = set(asset.get("title", "").lower().replace("-", " ").split())
@@ -1137,10 +1147,8 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
     for item in enabled:
         if item["rights_status"] not in PRODUCTION_RIGHTS or item.get("status") not in {"ready", "approved"} or not item["local_path"]:
             raise ValueError(f"Asset '{item['title']}' is not cleared for production")
-        health_error = production_health_error(item)
-        if health_error:
-            raise ValueError(f"Asset '{item['title']}' is not ready for production: {health_error}")
-        validate_video(Path(item["local_path"]))
+        fresh_asset = _recheck_production_asset(db, item["asset_id"], item["title"])
+        validate_video(Path(fresh_asset["local_path"]))
 
     db.update("projects", "id", project_id, {"status": "rendering", "output_dir": "", "manifest_json": "{}", "updated_at": now_iso()})
     output_root.mkdir(parents=True, exist_ok=True)
@@ -1158,7 +1166,8 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
     }
     try:
         for index, item in enumerate(enabled):
-            source = Path(item["local_path"])
+            fresh_asset = db.get("assets", "id", item["asset_id"]) or item
+            source = Path(fresh_asset["local_path"])
             source_duration = float(item["duration"] or 0)
             start = max(float(item["in_point"] or 0), 0)
             requested = float(item["out_point"] or 0) - start if item["out_point"] else source_duration - start
@@ -1166,7 +1175,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             segment = work_dir / f"segment-{index:02d}.mp4"
             normalize_segment(source, segment, start, duration)
             segments.append(segment)
-            manifest["inputs"].append({"asset_id": item["asset_id"], "title": item["title"], "source": str(source), "provenance": asset_provenance(item), "in": start, "duration": duration})
+            manifest["inputs"].append({"asset_id": item["asset_id"], "title": item["title"], "source": str(source), "provenance": asset_provenance(fresh_asset), "in": start, "duration": duration})
             progress(0.12 + ((index + 1) / len(enabled)) * 0.56, f"Prepared clip {index + 1} of {len(enabled)}")
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -1189,17 +1198,15 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             mix_inputs: list[dict[str, Any]] = []
             manifest_tracks: list[dict[str, Any]] = []
             for track in audio_tracks:
-                if track.get("rights_status") not in PRODUCTION_RIGHTS or track.get("status") not in {"ready", "approved"} or not track.get("local_path") or not str(track.get("mime_type") or "").startswith("audio/"):
+                fresh_track = _recheck_production_asset(db, track["asset_id"], track.get("title") or track["asset_id"])
+                if not fresh_track.get("local_path") or not str(fresh_track.get("mime_type") or "").startswith("audio/"):
                     raise ValueError(f"Selected audio '{track.get('title') or track.get('asset_id')}' is not cleared for production")
-                health_error = production_health_error(track)
-                if health_error:
-                    raise ValueError(f"Selected audio '{track.get('title') or track.get('asset_id')}' is not ready for production: {health_error}")
-                audio_source = Path(track["local_path"])
+                audio_source = Path(fresh_track["local_path"])
                 validate_audio(audio_source)
                 volume = _bounded_float(track.get("volume"), 0.16, 0.0, 1.0)
                 start_time = _bounded_float(track.get("start_time"), 0.0, 0.0, 3600.0)
                 mix_inputs.append({"source": audio_source, "role": track["role"], "volume": volume, "start_time": start_time})
-                manifest_tracks.append({"asset_id": track["asset_id"], "title": track.get("title", ""), "role": track["role"], "source": str(audio_source), "provenance": asset_provenance(track), "volume": volume, "start_time": start_time})
+                manifest_tracks.append({"asset_id": track["asset_id"], "title": track.get("title", ""), "role": track["role"], "source": str(audio_source), "provenance": asset_provenance(fresh_track), "volume": volume, "start_time": start_time})
             mixed = output_dir / "mixed.mp4"
             mix_audio_tracks(base, mix_inputs, mixed)
             base.unlink(missing_ok=True)
