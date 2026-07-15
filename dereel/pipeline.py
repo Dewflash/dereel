@@ -389,36 +389,37 @@ def create_asset(
     now = now_iso()
     details = metadata or {}
     fingerprint = str(details.get("fingerprint") or "")
-    if fingerprint and kind == "media":
-        with db.connection() as connection:
+    values = {
+        "id": asset_id,
+        "kind": kind,
+        "title": (title or "Untitled source").strip()[:160],
+        "source_url": source_url.strip()[:1000],
+        "platform": platform.strip()[:40],
+        "local_path": local_path,
+        "mime_type": mime_type,
+        "duration": details.get("duration"),
+        "width": details.get("width"),
+        "height": details.get("height"),
+        "has_audio": int(bool(details.get("has_audio"))),
+        "file_size": details.get("file_size"),
+        "fingerprint": fingerprint,
+        "automation_id": automation_id,
+        "tags_json": json_dumps(sorted({tag.strip().lower() for tag in (tags or []) if tag.strip()})),
+        "rights_status": rights_status,
+        "status": "candidate" if kind == "reference" else "ready",
+        "analysis_json": json_dumps(details),
+        "created_at": now,
+        "updated_at": now,
+    }
+    columns = ", ".join(values)
+    placeholders = ", ".join("?" for _ in values)
+    with db.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        if fingerprint and kind == "media":
             duplicate = connection.execute("SELECT id, title FROM assets WHERE kind = 'media' AND fingerprint = ? LIMIT 1", (fingerprint,)).fetchone()
-        if duplicate:
-            raise ValueError(f"Media matches existing asset '{duplicate['title']}' ({duplicate['id']})")
-    db.insert(
-        "assets",
-        {
-            "id": asset_id,
-            "kind": kind,
-            "title": (title or "Untitled source").strip()[:160],
-            "source_url": source_url.strip()[:1000],
-            "platform": platform.strip()[:40],
-            "local_path": local_path,
-            "mime_type": mime_type,
-            "duration": details.get("duration"),
-            "width": details.get("width"),
-            "height": details.get("height"),
-            "has_audio": int(bool(details.get("has_audio"))),
-            "file_size": details.get("file_size"),
-            "fingerprint": fingerprint,
-            "automation_id": automation_id,
-            "tags_json": json_dumps(sorted({tag.strip().lower() for tag in (tags or []) if tag.strip()})),
-            "rights_status": rights_status,
-            "status": "candidate" if kind == "reference" else "ready",
-            "analysis_json": json_dumps(details),
-            "created_at": now,
-            "updated_at": now,
-        },
-    )
+            if duplicate:
+                raise ValueError(f"Media matches existing asset '{duplicate['title']}' ({duplicate['id']})")
+        connection.execute(f"INSERT INTO assets ({columns}) VALUES ({placeholders})", tuple(values.values()))
     return asset_view(db.get("assets", "id", asset_id) or {})
 
 
