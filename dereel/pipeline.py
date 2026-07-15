@@ -664,6 +664,9 @@ def _normalize_audio_tracks(db: Database, payload: dict[str, Any]) -> list[dict[
             raise ValueError(f"Selected {role} is not a valid audio asset")
         if asset.get("rights_status") not in PRODUCTION_RIGHTS or asset.get("status") not in {"ready", "approved"}:
             raise ValueError(f"Selected {role} is not cleared for production")
+        health_error = production_health_error(asset)
+        if health_error:
+            raise ValueError(f"Selected {role} is not ready for production: {health_error}")
         tracks.append({"asset_id": asset_id, "role": role, "volume": _bounded_float(item.get("volume"), 0.16, 0.0, 1.0), "start_time": _bounded_float(item.get("start_time"), 0.0, 0.0, 3600.0)})
     return tracks
 

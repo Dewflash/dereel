@@ -471,11 +471,23 @@ class CoreModelTests(unittest.TestCase):
             project = create_project(db, {"name": "No treatment", "theme": "quiet", "add_title_card": "false", "write_captions": 0})
             self.assertEqual((project["settings"]["add_title_card"], project["settings"]["write_captions"]), (False, False))
 
+    def test_project_audio_selection_rejects_flagged_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            audio_path = root / "changed.m4a"
+            audio_path.write_bytes(b"audio")
+            audio = create_asset(db, kind="media", title="Changed bed", local_path=str(audio_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "health": {"status": "changed", "problems": ["File fingerprint changed since import"]}})
+            with self.assertRaisesRegex(ValueError, "not ready for production: media file changed since import"):
+                create_project(db, {"name": "Audio gate", "theme": "cats", "audio_tracks": [{"asset_id": audio["id"], "role": "music"}]})
+
     def test_project_settings_update_replaces_audio_and_invalidates_old_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             db = Database(root / "test.sqlite3")
-            music = create_asset(db, kind="media", title="Music", local_path=str(root / "music.m4a"), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 8, "has_audio": True})
+            music_path = root / "music.m4a"
+            music_path.write_bytes(b"audio")
+            music = create_asset(db, kind="media", title="Music", local_path=str(music_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 8, "has_audio": True})
             project = create_project(db, {"name": "Before", "theme": "cats"})
             db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(root / "old-output"), "manifest_json": json.dumps({"validation": {"status": "passed"}})})
             updated = update_project(db, project["id"], {"name": "After", "theme": "cats funny", "title": "Cats in trouble", "caption": "Perfect timing.", "duration_target": 42, "style": "clean", "add_title_card": False, "write_captions": True, "audio_tracks": [{"asset_id": music["id"], "role": "music", "volume": 0.2}]})
