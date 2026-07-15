@@ -882,6 +882,23 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(project["settings"]["add_title_card"])
             self.assertTrue(project["settings"]["write_captions"])
 
+    def test_project_creation_rolls_back_when_audio_link_insert_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            audio_path = root / "bed.m4a"
+            audio_path.write_bytes(b"audio")
+            audio = create_asset(db, kind="media", title="Music bed", local_path=str(audio_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4})
+            with db.connection() as connection:
+                connection.execute(
+                    "CREATE TRIGGER fail_project_audio BEFORE INSERT ON project_audio BEGIN SELECT RAISE(ABORT, 'forced audio link failure'); END"
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "forced audio link failure"):
+                create_project(db, {"name": "Atomic project", "theme": "cats", "audio_tracks": [{"asset_id": audio["id"], "role": "music"}]})
+            with db.connection() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 0)
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM project_audio").fetchone()[0], 0)
+
     def test_project_text_treatment_settings_normalize_boolean_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")

@@ -744,26 +744,27 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     write_captions = _as_bool(payload.get("write_captions"), True)
     audio_tracks = _normalize_audio_tracks(db, payload)
     music_track = next((track for track in audio_tracks if track["role"] == "music"), None)
-    db.insert(
-        "projects",
-        {
-            "id": project_id,
-            "name": name,
-            "theme": theme,
-            "format": "vertical_9_16",
-            "duration_target": duration_target,
-            "style": style,
-            "status": "draft",
-            "title": title,
-            "caption": caption,
-            "output_dir": "",
-            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": add_title_card, "write_captions": write_captions, "music_asset_id": music_track["asset_id"] if music_track else "", "music_volume": music_track["volume"] if music_track else 0.16, "audio_tracks": audio_tracks}),
-            "manifest_json": json_dumps({}),
-            "created_at": now,
-            "updated_at": now,
-        },
-    )
+    values = {
+        "id": project_id,
+        "name": name,
+        "theme": theme,
+        "format": "vertical_9_16",
+        "duration_target": duration_target,
+        "style": style,
+        "status": "draft",
+        "title": title,
+        "caption": caption,
+        "output_dir": "",
+        "settings_json": json_dumps({"clip_gap": 0, "add_title_card": add_title_card, "write_captions": write_captions, "music_asset_id": music_track["asset_id"] if music_track else "", "music_volume": music_track["volume"] if music_track else 0.16, "audio_tracks": audio_tracks}),
+        "manifest_json": json_dumps({}),
+        "created_at": now,
+        "updated_at": now,
+    }
+    columns = ", ".join(values)
+    placeholders = ", ".join("?" for _ in values)
     with db.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(f"INSERT INTO projects ({columns}) VALUES ({placeholders})", tuple(values.values()))
         for track in audio_tracks:
             connection.execute(
                 "INSERT INTO project_audio(project_id, asset_id, role, volume, start_time) VALUES (?, ?, ?, ?, ?)",
