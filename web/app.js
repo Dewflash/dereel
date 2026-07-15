@@ -162,7 +162,9 @@ function renderAssets() {
   const emptyDetail = state.assetFilter === "references" ? "Save a source URL to Scout." : state.assetFilter === "content_review" ? "No flagged local media is waiting for a content decision." : "Import a cleared video to populate the board.";
   $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", emptyDetail);
   renderReviewToolbar();
-  renderAssetInspector();
+  const inspected = state.assets.find((asset) => asset.id === state.inspectedAssetId);
+  const inspector = $("#asset-inspector");
+  if (!inspected || inspector.dataset.assetSignature !== assetRenderSignature(inspected)) renderAssetInspector();
 }
 
 function isReviewableAsset(asset) {
@@ -262,11 +264,15 @@ function assetContentReviewHistory(asset) {
   return `<div class="asset-review-history"><div class="asset-review-history-header"><div><span class="eyebrow">DECISION LOG</span><strong>Content review history</strong></div>${toggle}</div>${rows}</div>`;
 }
 
+function assetRenderSignature(asset) {
+  return JSON.stringify(asset);
+}
+
 function renderAssetInspector() {
   const node = $("#asset-inspector");
   if (!node) return;
   const asset = state.assets.find((item) => item.id === state.inspectedAssetId);
-  if (!asset) { node.hidden = true; node.innerHTML = ""; return; }
+  if (!asset) { node.hidden = true; node.dataset.assetSignature = ""; node.innerHTML = ""; return; }
   const provenance = asset.provenance || {};
   const sourceUrl = /^https?:\/\//i.test(asset.source_url || "") ? asset.source_url : "";
   const fingerprint = provenance.fingerprint ? `${provenance.fingerprint.slice(0, 20)}...` : "Not analyzed";
@@ -274,6 +280,7 @@ function renderAssetInspector() {
   const health = asset.health || { status: "unchecked", problems: [] };
   const healthDetail = health.problems?.length ? health.problems.join("; ") : health.status === "passed" ? `Checked ${health.checked_at || ""}` : health.status === "unchecked" ? "Not checked yet" : "Reference record";
   node.hidden = false;
+  node.dataset.assetSignature = assetRenderSignature(asset);
   node.innerHTML = `<div class="asset-inspector-header"><div><span class="eyebrow accent">SOURCE RECORD</span><h3>${escapeHtml(asset.title)}</h3><p>Inspect the origin, health, and curation metadata without changing the source file.</p></div><button class="text-button" type="button" data-action="close-asset-inspector">Close</button></div><div class="inspector-grid"><div class="asset-detail-list"><div class="asset-detail"><span>Origin</span><strong>${escapeHtml(provenance.source_type || "unknown")}</strong></div><div class="asset-detail"><span>Platform</span><strong>${escapeHtml(provenance.platform || "local")}</strong></div><div class="asset-detail"><span>Automation</span><strong>${escapeHtml(provenance.automation_id || "Manual import")}</strong></div><div class="asset-detail"><span>Fingerprint</span><code title="${escapeHtml(provenance.fingerprint || "")}">${escapeHtml(fingerprint)}</code></div><div class="asset-detail"><span>Local file</span><code>${escapeHtml(provenance.local_path || "Reference only")}</code></div><div class="asset-detail"><span>Source URL</span>${sourceUrl ? `<a class="inspector-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : `<strong>${escapeHtml(asset.source_url || "No source URL")}</strong>`}</div><div class="asset-detail"><span>Media health</span><div>${statusPill(health.status)}<small class="health-detail">${escapeHtml(healthDetail)}</small></div></div><div class="asset-flags"><span>Review flags</span><div>${flags}</div></div></div><form class="inspector-form" id="asset-inspector-form" data-asset-id="${escapeHtml(asset.id)}"><label>Title<input name="title" value="${escapeHtml(asset.title)}" maxlength="160" required /></label><label>Tags<input name="tags" value="${escapeHtml((asset.tags || []).join(", "))}" placeholder="cute, funny, reaction" /></label><label>Source URL<input name="source_url" type="url" value="${escapeHtml(asset.source_url || "")}" placeholder="https://..." /></label><button class="button secondary full" type="submit">Save curation</button><button class="button secondary full" type="button" data-health-asset="${escapeHtml(asset.id)}">Recheck media</button><button class="button danger full" type="button" data-delete-asset="${escapeHtml(asset.id)}">Delete source record</button><p class="form-note">Rights decisions stay in the review queue. This form only edits descriptive metadata.</p></form></div></div>${assetReviewControls(asset)}${assetReviewHistory(asset)}`;
   node.insertAdjacentHTML("beforeend", assetContentReviewControls(asset) + assetContentReviewHistory(asset));
   $(".asset-detail-list", node)?.insertAdjacentHTML("beforeend", assetContentRiskDetail(asset));
