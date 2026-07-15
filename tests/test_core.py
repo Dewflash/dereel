@@ -14,7 +14,7 @@ from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
-from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder
+from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
 from dereel.server import AppState, finalize_publish_success, recover_interrupted_jobs, runtime_diagnostics
@@ -215,6 +215,16 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in due_automations(db)], [automation["id"]])
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
+
+    def test_active_automation_freezes_configuration_but_allows_pause(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            automation = create_automation(db, {"name": "Active recipe", "watch_dir": directory})
+            self.assertTrue(claim_automation(db, automation["id"]))
+            with self.assertRaisesRegex(ValueError, "cannot change while it is processing"):
+                update_automation(db, automation["id"], {"name": "Changed while active"})
+            paused = update_automation(db, automation["id"], {"enabled": False})
+            self.assertFalse(paused["enabled"])
 
     def test_owned_watch_import_records_automation_attestation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

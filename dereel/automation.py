@@ -227,6 +227,8 @@ def update_automation(db: Database, automation_id: str, payload: dict[str, Any])
     row = db.get("automations", "id", automation_id)
     if not row:
         raise KeyError("Automation not found")
+    if row.get("status") in {"queued", "running"} and set(payload) - {"enabled"}:
+        raise ValueError("Automation configuration cannot change while it is processing")
     current = automation_view(row)
     values = _normalized_payload(db, payload, current)
     values["updated_at"] = now_iso()
