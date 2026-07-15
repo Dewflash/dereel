@@ -61,6 +61,7 @@ from .scout import configured_providers, import_provider_asset, search as search
 
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
+FILE_STREAM_CHUNK_SIZE = 1024 * 1024
 JOB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dereel-job")
 INTERRUPTED_JOB_ERROR = "Interrupted by process restart"
 
@@ -860,14 +861,68 @@ class Handler(BaseHTTPRequestHandler):
     def serve_file(self, path: Path) -> None:
         if not path.is_file():
             raise FileNotFoundError
-        data = path.read_bytes()
+        size = path.stat().st_size
         content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        self.send_response(HTTPStatus.OK)
+        start = 0
+        end = size - 1
+        status = HTTPStatus.OK
+        range_header = self.headers.get("Range", "").strip()
+        if range_header:
+            invalid_range = False
+            if not range_header.startswith("bytes=") or "," in range_header:
+                invalid_range = True
+            else:
+                spec = range_header.removeprefix("bytes=").strip()
+                if "-" not in spec:
+                    invalid_range = True
+                else:
+                    raw_start, raw_end = (part.strip() for part in spec.split("-", 1))
+                    try:
+                        if not raw_start:
+                            suffix_length = int(raw_end)
+                            if suffix_length <= 0 or size <= 0:
+                                invalid_range = True
+                            else:
+                                start = max(size - suffix_length, 0)
+                                end = size - 1
+                        else:
+                            start = int(raw_start)
+                            end = int(raw_end) if raw_end else size - 1
+                            if start < 0 or start >= size or end < start:
+                                invalid_range = True
+                            else:
+                                end = min(end, size - 1)
+                    except ValueError:
+                        invalid_range = True
+            if invalid_range:
+                self.send_response(HTTPStatus.REQUESTED_RANGE_NOT_SATISFIABLE)
+                self.send_header("Content-Range", f"bytes */{size}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            status = HTTPStatus.PARTIAL_CONTENT
+
+        content_length = max(end - start + 1, 0)
+        self.send_response(status)
         self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Length", str(content_length))
+        self.send_header("Accept-Ranges", "bytes")
+        if status == HTTPStatus.PARTIAL_CONTENT:
+            self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.send_header("Cache-Control", "private, max-age=3600")
         self.end_headers()
-        self.wfile.write(data)
+        try:
+            with path.open("rb") as source:
+                source.seek(start)
+                remaining = content_length
+                while remaining:
+                    chunk = source.read(min(FILE_STREAM_CHUNK_SIZE, remaining))
+                    if not chunk:
+                        break
+                    self.wfile.write(chunk)
+                    remaining -= len(chunk)
+        except (BrokenPipeError, ConnectionResetError):
+            return
 
 
 def serve(app_settings: Settings = settings) -> None:

@@ -17,10 +17,74 @@ from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
-from dereel.server import AppState, finalize_publish_success, recover_interrupted_jobs, runtime_diagnostics
+from dereel.server import AppState, Handler, finalize_publish_success, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
 
 class CoreModelTests(unittest.TestCase):
+    def test_local_file_serving_supports_streaming_ranges_and_path_guards(self) -> None:
+        class FakeHandler:
+            serve_file = Handler.serve_file
+
+            def __init__(self, range_header: str = "") -> None:
+                from email.message import Message
+
+                self.headers = Message()
+                if range_header:
+                    self.headers["Range"] = range_header
+                self.status = None
+                self.response_headers = {}
+                self.body = bytearray()
+                self.wfile = self
+
+            def send_response(self, status: int) -> None:
+                self.status = status
+
+            def send_header(self, name: str, value: str) -> None:
+                self.response_headers[name] = value
+
+            def end_headers(self) -> None:
+                return
+
+            def write(self, data: bytes) -> int:
+                self.body.extend(data)
+                return len(data)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            media = root / "preview.mp4"
+            media.write_bytes(b"0123456789")
+
+            full = FakeHandler()
+            full.serve_file(media)
+            self.assertEqual((full.status, bytes(full.body)), (200, b"0123456789"))
+            self.assertEqual(full.response_headers["Content-Length"], "10")
+            self.assertEqual(full.response_headers["Accept-Ranges"], "bytes")
+
+            empty = root / "empty.txt"
+            empty.touch()
+            empty_response = FakeHandler()
+            empty_response.serve_file(empty)
+            self.assertEqual((empty_response.status, bytes(empty_response.body)), (200, b""))
+            self.assertEqual(empty_response.response_headers["Content-Length"], "0")
+
+            partial = FakeHandler("bytes=2-5")
+            partial.serve_file(media)
+            self.assertEqual((partial.status, bytes(partial.body)), (206, b"2345"))
+            self.assertEqual(partial.response_headers["Content-Range"], "bytes 2-5/10")
+
+            suffix = FakeHandler("bytes=-3")
+            suffix.serve_file(media)
+            self.assertEqual((suffix.status, bytes(suffix.body)), (206, b"789"))
+
+            invalid = FakeHandler("bytes=8-2")
+            invalid.serve_file(media)
+            self.assertEqual(invalid.status, 416)
+            self.assertEqual(invalid.response_headers["Content-Range"], "bytes */10")
+            self.assertEqual(bytes(invalid.body), b"")
+
+            with self.assertRaisesRegex(ValueError, "outside"):
+                safe_path(root, "../outside.mp4")
+
     def test_database_initializes_and_preserves_asset_rights(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")
