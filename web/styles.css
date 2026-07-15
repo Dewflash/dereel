@@ -139,6 +139,9 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .review-toolbar h3 { display: inline-block; margin-right: 9px; }
 .review-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
 .review-actions .button { margin: 0; }
+.review-note { min-width: 180px; margin: 0; }
+.review-note span { color: var(--dim); font-size: 10px; font-weight: 750; text-transform: uppercase; letter-spacing: .7px; }
+.review-note input { padding: 8px 10px; font-size: 10px; }
 .library-panel { margin-top: 18px; }
 .asset-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
 .asset-card { overflow: hidden; border: 1px solid var(--line); border-radius: 5px; background: #111715; }

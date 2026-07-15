@@ -479,8 +479,10 @@ async function submitBulkReview(action) {
   if (!state.selectedAssets.size) { toast("Select at least one asset", true); return; }
   const labels = { approve_licensed: "Provider licenses approved", approve_owned: "Ownership attested", reject: "Assets rejected" };
   const reviewedIds = [...state.selectedAssets];
-  const result = await api("/api/assets/bulk", { method: "PATCH", body: JSON.stringify({ ids: reviewedIds, action }) });
+  const note = $("#bulk-review-note")?.value || "";
+  const result = await api("/api/assets/bulk", { method: "PATCH", body: JSON.stringify({ ids: reviewedIds, action, note }) });
   reviewedIds.forEach((id) => { delete state.assetReviews[id]; });
+  if ($("#bulk-review-note")) $("#bulk-review-note").value = "";
   state.selectedAssets.clear();
   toast(`${result.assets.length} asset${result.assets.length === 1 ? "" : "s"} updated: ${labels[action] || "Review updated"}`);
   await refresh();
