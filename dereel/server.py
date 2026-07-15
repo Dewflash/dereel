@@ -42,6 +42,7 @@ from .pipeline import (
     create_job,
     create_project,
     check_asset_health,
+    delete_asset,
     delete_project,
     get_project_assets,
     list_content_reviews,
@@ -1089,16 +1090,7 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/assets/([^/]+)", path)
         if match:
             asset_id = match.group(1)
-            asset = self.app.db.get("assets", "id", asset_id)
-            if not asset:
-                raise KeyError("Asset not found")
-            with self.app.db.connection() as connection:
-                usage = connection.execute("SELECT COUNT(*) FROM project_assets WHERE asset_id = ?", (asset_id,)).fetchone()[0]
-            if usage:
-                raise ValueError("Asset is used by a project and cannot be deleted")
-            if asset.get("local_path"):
-                Path(asset["local_path"]).unlink(missing_ok=True)
-            self.app.db.delete("assets", "id", asset_id)
+            delete_asset(self.app.db, asset_id)
             self.send_json({"deleted": asset_id})
             return
         self.send_error_json(HTTPStatus.NOT_FOUND, "API route not found")

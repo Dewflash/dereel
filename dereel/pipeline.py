@@ -422,6 +422,33 @@ def create_asset(
     return asset_view(db.get("assets", "id", asset_id) or {})
 
 
+def delete_asset(db: Database, asset_id: str) -> None:
+    local_path = ""
+    with db.connection() as connection:
+        row = connection.execute("SELECT id, local_path FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if not row:
+            raise KeyError("Asset not found")
+        project_usage = connection.execute(
+            "SELECT 1 FROM project_assets WHERE asset_id = ? UNION ALL SELECT 1 FROM project_audio WHERE asset_id = ? LIMIT 1",
+            (asset_id, asset_id),
+        ).fetchone()
+        if project_usage:
+            raise ValueError("Asset is used by a project and cannot be deleted")
+        automation_usage = connection.execute(
+            "SELECT name FROM automations WHERE music_asset_id = ? OR sfx_asset_id = ? OR voiceover_asset_id = ? LIMIT 1",
+            (asset_id, asset_id, asset_id),
+        ).fetchone()
+        if automation_usage:
+            raise ValueError(f"Asset is assigned to automation '{automation_usage['name']}' and cannot be deleted")
+        local_path = str(row["local_path"] or "")
+        connection.execute("DELETE FROM assets WHERE id = ?", (asset_id,))
+    if local_path:
+        try:
+            Path(local_path).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def analyze_asset(db: Database, asset_id: str) -> dict[str, Any]:
     asset = db.get("assets", "id", asset_id)
     if not asset:

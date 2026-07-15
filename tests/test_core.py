@@ -13,7 +13,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, create_asset, create_job, create_project, delete_asset, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed, import_provider_asset, import_provider_assets
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
@@ -946,6 +946,35 @@ class CoreModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "publish history"):
                 delete_project(db, project["id"], root / "outputs")
             self.assertIsNotNone(db.get("projects", "id", project["id"]))
+
+    def test_asset_delete_removes_unused_media_and_preserves_referenced_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            unused_path = root / "unused.mp4"
+            unused_path.write_bytes(b"unused")
+            unused = create_asset(db, kind="media", title="Unused", local_path=str(unused_path), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280})
+            delete_asset(db, unused["id"])
+            self.assertFalse(unused_path.exists())
+            self.assertIsNone(db.get("assets", "id", unused["id"]))
+
+            audio_path = root / "audio.m4a"
+            audio_path.write_bytes(b"audio")
+            audio = create_asset(db, kind="media", title="Audio", local_path=str(audio_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "has_audio": True})
+            project = create_project(db, {"name": "Audio reference", "theme": "sound", "audio_tracks": [{"asset_id": audio["id"], "role": "music"}]})
+            with self.assertRaisesRegex(ValueError, "used by a project"):
+                delete_asset(db, audio["id"])
+            self.assertTrue(audio_path.exists())
+            delete_project(db, project["id"])
+
+            automation_audio_path = root / "automation-audio.m4a"
+            automation_audio_path.write_bytes(b"audio")
+            automation_audio = create_asset(db, kind="media", title="Automation audio", local_path=str(automation_audio_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "has_audio": True})
+            automation = create_automation(db, {"name": "Audio recipe", "watch_dir": directory, "music_asset_id": automation_audio["id"]})
+            with self.assertRaisesRegex(ValueError, "assigned to automation"):
+                delete_asset(db, automation_audio["id"])
+            self.assertTrue(automation_audio_path.exists())
+            self.assertIsNotNone(db.get("automations", "id", automation["id"]))
 
     def test_timeline_moves_clips_and_marks_ready_projects_dirty(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
