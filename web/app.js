@@ -298,12 +298,32 @@ function renderAudioSelect() {
   });
 }
 
+function projectRenderSignature(project) {
+  return JSON.stringify({
+    id: project.id,
+    updated_at: project.updated_at,
+    status: project.status,
+    output_dir: project.output_dir,
+    settings: project.settings,
+    manifest: project.manifest,
+    assets: project.assets,
+    audio: project.audio,
+  });
+}
+
 function renderProjects() {
   $("#project-count").textContent = `${state.projects.length} project${state.projects.length === 1 ? "" : "s"}`;
   $("#project-list").innerHTML = state.projects.length ? state.projects.map(projectRow).join("") : empty("No edit briefs", "Create a project to begin planning a cut.");
   if (state.selectedProject) {
     const fresh = state.projects.find((project) => project.id === state.selectedProject.id);
-    if (fresh) { state.selectedProject = fresh; renderInspector(fresh); }
+    if (fresh) {
+      const changed = projectRenderSignature(fresh) !== projectRenderSignature(state.selectedProject);
+      state.selectedProject = fresh;
+      if (changed) renderInspector(fresh);
+    } else {
+      state.selectedProject = null;
+      $("#project-inspector").innerHTML = empty("Project no longer available", "Choose another edit brief from the project list.");
+    }
   }
 }
 
