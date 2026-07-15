@@ -275,8 +275,8 @@ function renderPublisher() {
     const readiness = account.readiness || {};
     const check = account.connection_check || {};
     const baseDetail = readiness.ready ? (account.status === "connected" ? `token detected · ${tokenEnv}` : `set ${tokenEnv}`) : (readiness.issues || [`set ${tokenEnv}`]).join(" · ");
-    const detail = check.status === "passed" ? `verified as ${check.identity || account.platform}` : check.status === "failed" ? `check failed · ${check.message || "unknown error"}` : check.status === "blocked" ? `check blocked · ${check.message || baseDetail}` : baseDetail;
-    const status = check.status === "passed" ? "verified" : check.status === "failed" ? "check_failed" : readiness.ready ? account.status : "needs_configuration";
+    const detail = !readiness.ready ? baseDetail : check.status === "passed" ? `verified as ${check.identity || account.platform}` : check.status === "failed" ? `check failed · ${check.message || "unknown error"}` : check.status === "blocked" ? `check blocked · ${check.message || baseDetail}` : baseDetail;
+    const status = readiness.ready && check.status === "passed" ? "verified" : readiness.ready && check.status === "failed" ? "check_failed" : readiness.ready ? account.status : "needs_configuration";
     return `<div class="account-row"><div class="row-icon">◎</div><div class="row-main"><strong>${escapeHtml(account.label)}</strong><small>${escapeHtml(account.platform)} · ${escapeHtml(detail)}</small></div>${statusPill(status)}<button class="row-action" data-check-account="${escapeHtml(account.id)}">Check</button><button class="row-action" data-edit-account="${escapeHtml(account.id)}">Edit</button><button class="row-action danger-action" data-delete-account="${escapeHtml(account.id)}">Delete</button></div>`;
   }).join("") : empty("No channels added", "Add a destination to prepare your outbox.");
   $("#publish-count").textContent = `${state.publishingJobs.filter((job) => ["queued", "ready"].includes(job.status)).length} queued`;
