@@ -15,9 +15,9 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder
-from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
+from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
-from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
+from dereel.server import AppState, finalize_publish_success, recover_interrupted_jobs, runtime_diagnostics
 
 
 class CoreModelTests(unittest.TestCase):
@@ -528,6 +528,27 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
         self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
 
+    def test_publisher_account_readiness_reports_platform_specific_blockers(self) -> None:
+        instagram = {"id": "account_ig", "platform": "instagram", "label": "Reels", "config_json": json.dumps({"instagram_user_id": "ig_123", "public_media_base_url": "https://media.example"})}
+        with patch.dict("os.environ", {}, clear=True):
+            unavailable = account_view(instagram)
+        self.assertFalse(unavailable["readiness"]["ready"])
+        self.assertIn("Set DEREEL_INSTAGRAM_ACCESS_TOKEN", unavailable["readiness"]["issues"])
+        with patch.dict("os.environ", {"DEREEL_INSTAGRAM_ACCESS_TOKEN": "token"}, clear=True):
+            ready = account_view(instagram)
+        self.assertTrue(ready["readiness"]["ready"])
+        with patch.dict("os.environ", {"DEREEL_INSTAGRAM_ACCESS_TOKEN": "token"}, clear=True):
+            incomplete = account_view({"id": "account_incomplete", "platform": "instagram", "label": "Incomplete", "config_json": "{}"})
+        self.assertFalse(incomplete["readiness"]["ready"])
+        self.assertIn("Instagram professional account ID is missing", incomplete["readiness"]["issues"])
+        with patch.dict("os.environ", {"DEREEL_INSTAGRAM_ACCESS_TOKEN": "token"}, clear=True):
+            invalid_url = account_view({"id": "account_invalid_url", "platform": "instagram", "label": "Invalid URL", "config_json": json.dumps({"instagram_user_id": "ig_123", "public_media_base_url": "https://"})})
+        self.assertFalse(invalid_url["readiness"]["ready"])
+        self.assertIn("HTTPS public media base URL is missing", invalid_url["readiness"]["issues"])
+        with patch.dict("os.environ", {"DEREEL_INSTAGRAM_ACCESS_TOKEN": "   "}, clear=True):
+            whitespace_token = account_view(instagram)
+        self.assertFalse(whitespace_token["readiness"]["token_configured"])
+
     def test_runtime_diagnostics_reports_media_and_provider_checks(self) -> None:
         diagnostics = runtime_diagnostics()
         self.assertIn("media", diagnostics)
@@ -574,6 +595,44 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(backfill_publish_integrity(db), 1)
             payload = json.loads(db.get("publish_jobs", "id", job_id)["payload_json"])
             self.assertTrue(payload["media_sha256"])
+
+    def test_publish_failure_fallback_closes_attempt_and_releases_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Fallback", "theme": "cats"})
+            job_id = "publish_failure_fallback"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            self.assertTrue(claim_publish_job(db, job_id))
+            attempt = begin_publish_attempt(db, job_id, "manual")
+            failed = fail_publish_attempt(db, job_id, attempt["id"], "adapter crashed")
+            self.assertEqual((failed["status"], failed["claim_token"], failed["error"]), ("failed", None, "adapter crashed"))
+            self.assertEqual(list_publish_attempts(db, job_id)[0]["status"], "failed")
+
+    def test_publish_success_fallback_records_remote_id_and_releases_claim(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Success fallback", "theme": "cats"})
+            job_id = "publish_success_fallback"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            self.assertTrue(claim_publish_job(db, job_id))
+            attempt = begin_publish_attempt(db, job_id, "manual")
+            published = force_publish_success(db, job_id, attempt["id"], "remote-123")
+            self.assertEqual((published["status"], published["remote_id"], published["claim_token"]), ("published", "remote-123", None))
+            self.assertEqual(list_publish_attempts(db, job_id)[0]["status"], "published")
+
+    def test_publish_success_finalizer_uses_fallback_after_completion_race(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Finalizer", "theme": "cats"})
+            job_id = "publish_success_finalizer"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            self.assertTrue(claim_publish_job(db, job_id))
+            attempt = begin_publish_attempt(db, job_id, "manual")
+            with patch("dereel.server.complete_publish_attempt", side_effect=ValueError("state race")):
+                finalize_publish_success(db, job_id, attempt, "remote-finalizer")
+            job = db.get("publish_jobs", "id", job_id)
+            self.assertEqual((job["status"], job["remote_id"], job["claim_token"]), ("published", "remote-finalizer", None))
+            self.assertEqual(list_publish_attempts(db, job_id)[0]["status"], "published")
 
     def test_published_jobs_cannot_be_replayed(self) -> None:
         with self.assertRaisesRegex(ValueError, "already marked published"):

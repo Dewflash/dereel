@@ -56,13 +56,37 @@ from .pipeline import (
     update_project,
     validate_project_output,
 )
-from .publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, reschedule_publish_job, update_publishing_account
+from .publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, reschedule_publish_job, update_publishing_account
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
 JOB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dereel-job")
 INTERRUPTED_JOB_ERROR = "Interrupted by process restart"
+
+
+def finalize_publish_failure(db: Database, job_id: str, attempt: dict[str, Any] | None, error: Exception | str) -> None:
+    message = str(error)[:1000]
+    try:
+        if attempt:
+            complete_publish_attempt(db, attempt["id"], "failed", error=message)
+        else:
+            complete_publish_job(db, job_id, "failed", error=message)
+    except Exception as finalization_error:
+        try:
+            fail_publish_attempt(db, job_id, attempt["id"] if attempt else "", f"{message}; finalization fallback: {finalization_error}")
+        except Exception:
+            return
+
+
+def finalize_publish_success(db: Database, job_id: str, attempt: dict[str, Any], remote_id: str) -> None:
+    try:
+        complete_publish_attempt(db, attempt["id"], "published", remote_id=remote_id)
+    except Exception:
+        try:
+            force_publish_success(db, job_id, attempt["id"], remote_id)
+        except Exception:
+            return
 
 
 def runtime_diagnostics() -> dict[str, Any]:
@@ -283,12 +307,9 @@ class AppState:
                 try:
                     attempt = begin_publish_attempt(self.db, row["id"], "scheduler")
                     remote_id = publish_job(self.db, claimed)
-                    complete_publish_attempt(self.db, attempt["id"], "published", remote_id=remote_id)
+                    finalize_publish_success(self.db, row["id"], attempt, remote_id)
                 except Exception as error:
-                    if attempt:
-                        complete_publish_attempt(self.db, attempt["id"], "failed", error=str(error))
-                    else:
-                        complete_publish_job(self.db, row["id"], "failed", error=str(error))
+                    finalize_publish_failure(self.db, row["id"], attempt, error)
 
 
 STATE: AppState | None = None
@@ -698,13 +719,10 @@ class Handler(BaseHTTPRequestHandler):
                 attempt = begin_publish_attempt(self.app.db, job_id, "manual")
                 remote_id = publish_job(self.app.db, claimed)
             except Exception as error:
-                if attempt:
-                    complete_publish_attempt(self.app.db, attempt["id"], "failed", error=str(error))
-                else:
-                    complete_publish_job(self.app.db, job_id, "failed", error=str(error))
+                finalize_publish_failure(self.app.db, job_id, attempt, error)
                 self.send_error_json(HTTPStatus.CONFLICT, str(error))
                 return
-            complete_publish_attempt(self.app.db, attempt["id"], "published", remote_id=remote_id)
+            finalize_publish_success(self.app.db, job_id, attempt, remote_id)
             self.send_json({"job": publish_job_view(self.app.db.get("publish_jobs", "id", job_id) or {})})
             return
         match = re.fullmatch(r"/api/publishing/jobs/([^/]+)/mark-published", path)

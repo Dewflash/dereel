@@ -96,6 +96,7 @@ h3 { margin: 7px 0 0; font-size: 16px; letter-spacing: -.15px; }
 .status-pill.failed, .status-pill.rejected { border-color: #693a38; color: var(--danger); }
 .status-pill.missing, .status-pill.invalid, .status-pill.changed { border-color: #693a38; color: var(--danger); }
 .status-pill.running, .status-pill.planning { border-color: #6d5135; color: var(--accent); }
+.status-pill.needs-configuration { border-color: #6d5135; color: var(--accent); }
 .status-pill.unchecked, .status-pill.reference { border-color: var(--line-bright); color: var(--dim); }
 .empty-state { display: grid; place-items: center; min-height: 150px; padding: 25px; color: var(--dim); text-align: center; }
 .empty-state span { margin-bottom: 12px; color: var(--accent); font-size: 24px; }

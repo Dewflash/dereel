@@ -36,19 +36,39 @@ def platform_capabilities() -> list[dict[str, Any]]:
     ]
 
 
+def _is_https_url(value: str) -> bool:
+    parsed = urllib.parse.urlparse(value)
+    return parsed.scheme == "https" and bool(parsed.netloc)
+
+
+def account_readiness(row: dict[str, Any]) -> dict[str, Any]:
+    config = json_loads(row.get("config_json"), {})
+    platform = str(row.get("platform") or "")
+    token_env = str(config.get("token_env") or PLATFORM_ENV.get(platform, ""))
+    token_configured = bool(str(os.getenv(token_env) or "").strip()) if token_env else False
+    issues: list[str] = []
+    if not token_configured:
+        issues.append(f"Set {token_env or 'a platform access token'}")
+    if platform == "instagram":
+        if not str(config.get("instagram_user_id") or os.getenv("DEREEL_INSTAGRAM_USER_ID") or "").strip():
+            issues.append("Instagram professional account ID is missing")
+        public_base = str(config.get("public_media_base_url") or os.getenv("DEREEL_INSTAGRAM_PUBLIC_MEDIA_BASE_URL") or "").strip()
+        if not _is_https_url(public_base):
+            issues.append("HTTPS public media base URL is missing")
+    return {"ready": not issues, "issues": issues, "token_env": token_env, "token_configured": token_configured}
+
+
 def account_view(row: dict[str, Any]) -> dict[str, Any]:
     item = dict(row)
-    try:
-        config = json.loads(item.pop("config_json", "{}"))
-    except json.JSONDecodeError:
-        config = {}
-    token_env = config.get("token_env") or PLATFORM_ENV.get(item["platform"], "")
+    config = json_loads(item.pop("config_json", "{}"), {})
+    readiness = account_readiness(row)
     item["config"] = {
-        "token_env": token_env,
+        "token_env": readiness["token_env"],
         "instagram_user_id": config.get("instagram_user_id", ""),
         "public_media_base_url": config.get("public_media_base_url", ""),
     }
-    item["status"] = "connected" if token_env and os.getenv(token_env) else "not_connected"
+    item["readiness"] = readiness
+    item["status"] = "connected" if readiness["token_configured"] else "not_connected"
     return item
 
 
@@ -292,6 +312,39 @@ def complete_publish_job(db: Database, job_id: str, status: str, remote_id: str 
     return db.get("publish_jobs", "id", job_id) or {}
 
 
+def fail_publish_attempt(db: Database, job_id: str, attempt_id: str = "", error: str = "") -> dict[str, Any]:
+    timestamp = now_iso()
+    with db.connection() as connection:
+        if attempt_id:
+            connection.execute(
+                "UPDATE publish_attempts SET status = 'failed', error = ?, finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+                (str(error or "Publish attempt failed")[:1000], timestamp, timestamp, attempt_id),
+            )
+        connection.execute(
+            "UPDATE publish_jobs SET status = 'failed', error = ?, claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL AND claim_token IS NOT NULL AND claim_token != ''",
+            (str(error or "Publish attempt failed")[:1000], timestamp, job_id),
+        )
+    return db.get("publish_jobs", "id", job_id) or {}
+
+
+def force_publish_success(db: Database, job_id: str, attempt_id: str, remote_id: str) -> dict[str, Any]:
+    timestamp = now_iso()
+    with db.connection() as connection:
+        attempt_result = connection.execute(
+            "UPDATE publish_attempts SET status = 'published', remote_id = ?, error = '', finished_at = ?, updated_at = ? WHERE id = ? AND status = 'running'",
+            (remote_id or "", timestamp, timestamp, attempt_id),
+        )
+        if attempt_result.rowcount != 1:
+            raise ValueError("Publish attempt could not be force-finalized")
+        job_result = connection.execute(
+            "UPDATE publish_jobs SET status = 'published', remote_id = ?, error = '', claim_token = NULL, claimed_at = NULL, updated_at = ? WHERE id = ? AND cancelled_at IS NULL AND claim_token IS NOT NULL AND claim_token != ''",
+            (remote_id or "", timestamp, job_id),
+        )
+        if job_result.rowcount != 1:
+            raise ValueError("Publish job could not be force-finalized")
+    return db.get("publish_jobs", "id", job_id) or {}
+
+
 def mark_publish_job(db: Database, job_id: str, remote_id: str = "manual") -> dict[str, Any]:
     with db.connection() as connection:
         result = connection.execute(
@@ -490,12 +543,12 @@ def publish_instagram_reel(payload: dict[str, Any], account: dict[str, Any], acc
     platform = str(payload.get("platform") or "instagram").strip()
     if not user_id:
         raise ValueError("Instagram user ID is required for Reels publishing")
-    if not public_base.startswith("https://"):
+    if not _is_https_url(public_base):
         raise ValueError("Instagram requires an HTTPS public media base URL")
     if not project_id:
         raise ValueError("Instagram publish job is missing its project ID")
     public_media_url = str(payload.get("public_media_url") or f"{public_base}/api/projects/{urllib.parse.quote(project_id)}/output/{platform}.mp4")
-    if not public_media_url.startswith("https://"):
+    if not _is_https_url(public_media_url):
         raise ValueError("Instagram media URL must use HTTPS")
     version = os.getenv("DEREEL_INSTAGRAM_GRAPH_VERSION", "v22.0")
     user_path = urllib.parse.quote(user_id, safe="")
@@ -579,11 +632,10 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
         account = dict(account_row) if account_row else None
     if not account:
         raise ValueError(f"No {job['platform']} account is connected to this publish job")
-    config = json.loads(account.get("config_json", "{}"))
-    token_env = config.get("token_env") or PLATFORM_ENV.get(job["platform"], "")
-    token = os.getenv(token_env)
-    if not token:
-        raise ValueError(f"Set {token_env} before publishing to {job['platform']}")
+    readiness = account_readiness(account)
+    if not readiness["ready"]:
+        raise ValueError(f"{PLATFORM_SPECS[job['platform']]['label']} account is not ready: " + "; ".join(readiness["issues"]))
+    token = str(os.getenv(readiness["token_env"]) or "").strip()
     if job["platform"] == "youtube":
         return publish_youtube(payload, token)
     if job["platform"] == "instagram":
