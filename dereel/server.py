@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import re
+import shutil
 import threading
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
@@ -25,7 +26,7 @@ from .automation import (
     set_automation_running,
     update_automation,
 )
-from .media import safe_extension, sha256_file, validate_audio, validate_video
+from .media import available_filters, safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
     analyze_asset,
     asset_view,
@@ -48,6 +49,22 @@ from .scout import configured_providers, import_provider_asset, search as search
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
 JOB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dereel-job")
 INTERRUPTED_JOB_ERROR = "Interrupted by process restart"
+
+
+def runtime_diagnostics() -> dict[str, Any]:
+    ffmpeg_path = shutil.which("ffmpeg") or ""
+    ffprobe_path = shutil.which("ffprobe") or ""
+    filters = available_filters() if ffmpeg_path else set()
+    return {
+        "media": {
+            "ffmpeg": bool(ffmpeg_path),
+            "ffprobe": bool(ffprobe_path),
+            "drawtext": "drawtext" in filters,
+            "ffmpeg_path": ffmpeg_path,
+            "ffprobe_path": ffprobe_path,
+        },
+        "providers": configured_providers(),
+    }
 
 
 def recover_interrupted_jobs(db: Database) -> list[str]:
@@ -301,6 +318,9 @@ class Handler(BaseHTTPRequestHandler):
     def handle_api_get(self, path: str, query: dict[str, list[str]]) -> None:
         if path == "/api/health":
             self.send_json({"ok": True, "version": "0.1.0", "database": str(self.app.settings.database_path)})
+            return
+        if path == "/api/diagnostics":
+            self.send_json(runtime_diagnostics())
             return
         if path == "/api/dashboard":
             with self.app.db.connection() as connection:

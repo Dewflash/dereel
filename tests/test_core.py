@@ -16,7 +16,7 @@ from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
 from dereel.config import Settings
-from dereel.server import AppState, recover_interrupted_jobs
+from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
 
 
 class CoreModelTests(unittest.TestCase):
@@ -214,6 +214,12 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(capabilities["youtube"]["mode"], "direct_upload")
         self.assertEqual(capabilities["instagram"]["mode"], "public_url_container")
         self.assertEqual(account_view({"id": "account_1", "platform": "youtube", "label": "Main", "config_json": "{}", "status": "not_connected"})["status"], "not_connected")
+
+    def test_runtime_diagnostics_reports_media_and_provider_checks(self) -> None:
+        diagnostics = runtime_diagnostics()
+        self.assertIn("media", diagnostics)
+        self.assertIn("ffmpeg", diagnostics["media"])
+        self.assertEqual({provider["id"] for provider in diagnostics["providers"]}, {"pexels", "pixabay"})
 
     def test_publisher_payload_provenance_keeps_source_and_audio_ids(self) -> None:
         provenance = publish_provenance(

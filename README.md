@@ -41,7 +41,7 @@ Instagram's public base URL must serve the local app's output route, for example
 ## Workflow
 
 1. Save online items as Scout references or import cleared local media.
-2. Inspect each source record in Scout to see its origin, source URL, local copy, automation ID, fingerprint, and review flags. Update descriptive metadata if needed, then review media individually or select a visible batch before marking production media as owned or licensed.
+2. Use Scout's library search and sort controls to narrow the board, open an HTTP(S) source directly when you need to revisit it, and inspect each source record to see its origin, source URL, local copy, automation ID, fingerprint, and review flags. Update descriptive metadata if needed, then review media individually or select a visible batch before marking production media as owned or licensed.
 3. Create a Forge project, choose an optional looping music bed plus a sound effect or voiceover with volume/start-time controls, and plan the edit automatically or add clips manually.
 4. Adjust clip trim points or disable individual clips in the Forge inspector, then render the project. The output folder contains `final.mp4`, platform copies, `render-manifest.json`, and `credits.json`; both JSON records carry source provenance, while `credits.json.assets` remains the stable asset-ID list.
 5. Check Publisher's delivery-readiness rows, then prepare publishing packages from Outputs. Each outbox payload keeps the credited asset IDs plus the output manifest and credits paths. The rows report which platform adapters have detected their environment token; unscheduled jobs remain approval-first in the outbox, while explicit schedules are checked by the local scheduler.
@@ -51,6 +51,8 @@ Instagram's public base URL must serve the local app's output route, for example
 Create a recipe in the Automations view as a watch-folder, provider-search, or combined source. Provider recipes use the configured Pexels/Pixabay API keys and import only approved provider-host media. Each run copies only new video files into `data/library/originals/`, records the recipe ID and source path, and rejects duplicate fingerprints. Set the rights default to `Needs review` for a review-first flow, or explicitly choose `Owned folder` / `Licensed folder` when the folder is already cleared. A pending batch is planned but not rendered; after approval, running the recipe again resumes that batch rather than creating another project. Recipes can also attach cleared music, a sound effect, and a voiceover with independent volume/start-time settings.
 
 An interval of `0` means manual runs only. A positive interval enables the local scheduler. Destination selection creates approval-ready outbox jobs after rendering; a publish delay schedules them for the local publisher worker. If the local process restarts during a render or automation run, DeReel marks the interrupted job failed with a retryable error instead of leaving a stale `running` record.
+
+Overview's preflight panel reports whether FFmpeg, FFprobe, optional text overlay support, and the Pexels/Pixabay provider keys are available before you start a run.
 
 ## Important boundary
 

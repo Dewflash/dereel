@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], platforms: [], providerResults: [], assetFilter: "all", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -47,8 +47,8 @@ function showView(view) {
 }
 
 async function refresh() {
-  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing, automations, platforms] = await Promise.all([
-    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"), api("/api/automations"), api("/api/publishing/platforms"),
+  const [dashboard, allAssets, filteredAssets, projects, jobs, accounts, publishing, automations, platforms, diagnostics] = await Promise.all([
+    api("/api/dashboard"), api("/api/assets?view=all"), api(`/api/assets?view=${state.assetFilter}`), api("/api/projects"), api("/api/jobs"), api("/api/publishing/accounts"), api("/api/publishing/jobs"), api("/api/automations"), api("/api/publishing/platforms"), api("/api/diagnostics"),
   ]);
   state.assets = allAssets.assets || [];
   state.visibleAssets = filteredAssets.assets || [];
@@ -58,7 +58,8 @@ async function refresh() {
   state.publishingJobs = publishing.jobs || [];
   state.automations = automations.automations || [];
   state.platforms = platforms.platforms || [];
-  renderDashboard(dashboard);
+  state.diagnostics = diagnostics || {};
+  renderDashboard(dashboard, state.diagnostics);
   renderAssets();
   renderAudioSelect();
   renderProjects();
@@ -69,7 +70,7 @@ async function refresh() {
   $("#latest-job-status").textContent = active ? `${active.message} ${Math.round(active.progress * 100)}%` : "No active jobs";
 }
 
-function renderDashboard(data) {
+function renderDashboard(data, diagnostics = {}) {
   const counts = data.counts || {};
   const metrics = [["ASSET LIBRARY", counts.assets || 0, "total sources"], ["PRODUCTION READY", counts.ready_assets || 0, "cleared media"], ["PROJECTS", counts.projects || 0, "edit briefs"], ["RENDERED", counts.ready_projects || 0, "ready exports"], ["OUTBOX", counts.publish_queue || 0, "queued packages"]];
   $("#metric-grid").innerHTML = metrics.map(([label, value, caption]) => `<div class="metric"><span class="eyebrow">${label}</span><strong>${value}</strong><span>${caption}</span></div>`).join("");
@@ -77,7 +78,21 @@ function renderDashboard(data) {
   $("#recent-projects").innerHTML = projects.length ? projects.map(projectRow).join("") : empty("No projects yet", "Create a brief in Forge to start an edit.");
   const jobs = data.jobs || [];
   $("#job-list").innerHTML = jobs.length ? jobs.map((job) => `<div class="job-row"><div class="row-icon">${job.kind === "render" ? "▶" : "•"}</div><div class="row-main"><strong>${escapeHtml(job.message || job.kind)}</strong><small>${escapeHtml(job.project_id || "Workspace job")}</small></div>${statusPill(job.status)}</div>`).join("") : empty("No jobs yet", "Render and analysis jobs will appear here.");
+  renderDiagnostics(diagnostics);
   $("#health-label").textContent = "ready";
+}
+
+function renderDiagnostics(diagnostics) {
+  const node = $("#diagnostics-list");
+  if (!node) return;
+  const media = diagnostics.media || {};
+  const checks = [
+    ["FFmpeg", Boolean(media.ffmpeg), media.ffmpeg_path || "Binary not found"],
+    ["FFprobe", Boolean(media.ffprobe), media.ffprobe_path || "Binary not found"],
+    ["Text overlay", Boolean(media.drawtext), media.drawtext ? "drawtext available" : "Optional; captions still render"],
+    ...(diagnostics.providers || []).map((provider) => [provider.label, Boolean(provider.configured), provider.configured ? "API key detected" : "API key not configured"]),
+  ];
+  node.innerHTML = checks.map(([label, ok, detail]) => `<div class="diagnostic-row"><div class="row-main"><strong>${escapeHtml(label)}</strong><small>${escapeHtml(detail)}</small></div>${statusPill(ok ? "ready" : "not_configured")}</div>`).join("");
 }
 
 function projectRow(project) {
@@ -86,11 +101,27 @@ function projectRow(project) {
 
 function empty(title, detail) { return `<div class="empty-state"><span>·</span><strong>${escapeHtml(title)}</strong><p>${escapeHtml(detail)}</p></div>`; }
 
+function libraryAssets() {
+  const query = state.assetQuery.trim().toLowerCase();
+  const filtered = state.visibleAssets.filter((asset) => {
+    if (!query) return true;
+    return [asset.title, asset.platform, asset.source_url, ...(asset.tags || []), ...(asset.review_flags || [])].join(" ").toLowerCase().includes(query);
+  });
+  return filtered.sort((left, right) => {
+    if (state.assetSort === "shortest") return Number(left.duration || Infinity) - Number(right.duration || Infinity);
+    if (state.assetSort === "longest") return Number(right.duration || 0) - Number(left.duration || 0);
+    if (state.assetSort === "name") return String(left.title || "").localeCompare(String(right.title || ""));
+    if (state.assetSort === "review") return (right.review_flags || []).length - (left.review_flags || []).length;
+    return String(right.created_at || "").localeCompare(String(left.created_at || ""));
+  });
+}
+
 function renderAssets() {
-  const assets = state.visibleAssets;
-  const selectable = new Set(assets.filter(isReviewableAsset).map((asset) => asset.id));
+  const assets = libraryAssets();
+  const selectable = new Set(state.visibleAssets.filter(isReviewableAsset).map((asset) => asset.id));
   state.selectedAssets = new Set([...state.selectedAssets].filter((id) => selectable.has(id)));
-  $("#asset-count").textContent = `${assets.length} asset${assets.length === 1 ? "" : "s"}`;
+  const count = assets.length === state.visibleAssets.length ? `${assets.length}` : `${assets.length} of ${state.visibleAssets.length}`;
+  $("#asset-count").textContent = `${count} asset${assets.length === 1 ? "" : "s"}`;
   $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", state.assetFilter === "references" ? "Save a source URL to Scout." : "Import a cleared video to populate the board.");
   renderReviewToolbar();
   renderAssetInspector();
@@ -119,8 +150,9 @@ function assetCard(asset) {
   const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status);
   const providerImport = ["pexels", "pixabay"].includes(String(asset.platform || "").toLowerCase());
   const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
+  const sourceAction = /^https?:\/\//i.test(asset.source_url || "") ? `<a class="mini-button mini-link" href="${escapeHtml(asset.source_url)}" target="_blank" rel="noreferrer">Open source</a>` : "";
   const flags = (asset.review_flags || []).map((flag) => `<span class="risk-flag">${escapeHtml(flag.replaceAll("-", " "))}</span>`).join("");
-  return `<article class="asset-card"><div class="asset-preview">${selector}${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}<button class="mini-button" data-inspect-asset="${asset.id}">Inspect</button><button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+  return `<article class="asset-card"><div class="asset-preview">${selector}${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}${sourceAction}<button class="mini-button" data-inspect-asset="${asset.id}">Inspect</button><button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
 }
 
 function renderAssetInspector() {
@@ -355,7 +387,7 @@ async function handleClick(event) {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
-    if (action === "select-visible") { state.visibleAssets.filter(isReviewableAsset).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
+    if (action === "select-visible") { libraryAssets().filter(isReviewableAsset).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
     if (action === "clear-selection") { state.selectedAssets.clear(); renderAssets(); return; }
     if (action === "close-asset-inspector") { state.inspectedAssetId = ""; renderAssets(); return; }
     if (bulkAction) { await submitBulkReview(bulkAction); return; }
@@ -447,6 +479,8 @@ function handleAssetSelection(event) {
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleAssetSelection);
 document.addEventListener("submit", (event) => { if (event.target.id === "asset-inspector-form") { event.preventDefault(); submitAssetCuration(event.target); } });
+$("#asset-search").addEventListener("input", (event) => { state.assetQuery = event.target.value; renderAssets(); });
+$("#asset-sort").addEventListener("change", (event) => { state.assetSort = event.target.value; renderAssets(); });
 $("#upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitUpload(event.currentTarget); });
 $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });
