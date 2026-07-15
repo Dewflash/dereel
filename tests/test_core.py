@@ -14,7 +14,7 @@ from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
-from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
+from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder
 from dereel.publisher import account_view, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
 from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
@@ -215,6 +215,22 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual([item["id"] for item in due_automations(db)], [automation["id"]])
             self.assertTrue(claim_automation(db, automation["id"]))
             self.assertEqual(due_automations(db), [])
+
+    def test_owned_watch_import_records_automation_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watch_dir = root / "watch"
+            watch_dir.mkdir()
+            (watch_dir / "owned.mp4").write_bytes(b"video")
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Owned watch", "watch_dir": str(watch_dir), "default_rights": "owned_distribution"})
+            metadata = {"duration": 2, "file_size": 5, "width": 720, "height": 1280, "has_audio": False}
+            with patch("dereel.automation.validate_video", return_value=metadata), patch("dereel.automation.sha256_file", return_value="owned-fingerprint"):
+                result = scan_watch_folder(db, automation, root / "library")
+            asset = result["imported"][0]
+            self.assertEqual((asset["rights_status"], asset["status"]), ("owned_distribution", "approved"))
+            history = list_asset_reviews(db, asset["id"])
+            self.assertEqual((history[0]["action"], history[0]["previous_rights_status"], history[0]["note"]), ("approve_owned", "pending_review", "Automation attestation: owned distribution"))
 
     def test_automation_audio_controls_persist_and_feed_new_projects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

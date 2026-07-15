@@ -515,13 +515,17 @@ class Handler(BaseHTTPRequestHandler):
             fields, files = parse_multipart(content_type, self.read_body())
             if "file" not in files:
                 raise ValueError("A video file is required")
+            requested_rights = fields.get("rights_status", "pending_review")
+            if requested_rights not in {"pending_review", "owned_distribution", "licensed_distribution"}:
+                raise ValueError("Unsupported import rights status")
             filename, data, mime_type = files["file"]
             if len(data) > MAX_UPLOAD_BYTES:
                 raise ValueError("Video exceeds upload limit")
             asset_id = new_id("asset")
             destination = self.app.settings.originals_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
-            destination.write_bytes(data)
+            created_asset_id = ""
             try:
+                destination.write_bytes(data)
                 metadata = validate_video(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(
@@ -533,10 +537,16 @@ class Handler(BaseHTTPRequestHandler):
                     local_path=str(destination),
                     mime_type=mime_type,
                     tags=[tag.strip() for tag in fields.get("tags", "").split(",")],
-                    rights_status=fields.get("rights_status", "pending_review"),
+                    rights_status="pending_review",
                     metadata=metadata,
                 )
+                created_asset_id = asset["id"]
+                if requested_rights != "pending_review":
+                    action = "approve_owned" if requested_rights == "owned_distribution" else "approve_licensed"
+                    asset = review_asset(self.app.db, asset["id"], action, f"Upload attestation: {requested_rights.replace('_', ' ')}")
             except Exception:
+                if created_asset_id:
+                    self.app.db.delete("assets", "id", created_asset_id)
                 destination.unlink(missing_ok=True)
                 raise
             self.send_json({"asset": asset}, HTTPStatus.CREATED)
@@ -546,13 +556,17 @@ class Handler(BaseHTTPRequestHandler):
             fields, files = parse_multipart(content_type, self.read_body())
             if "file" not in files:
                 raise ValueError("An audio file is required")
+            requested_rights = fields.get("rights_status", "pending_review")
+            if requested_rights not in {"pending_review", "owned_distribution", "licensed_distribution"}:
+                raise ValueError("Unsupported import rights status")
             filename, data, mime_type = files["file"]
             if len(data) > MAX_UPLOAD_BYTES:
                 raise ValueError("Audio exceeds upload limit")
             asset_id = new_id("asset")
             destination = self.app.settings.audio_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
-            destination.write_bytes(data)
+            created_asset_id = ""
             try:
+                destination.write_bytes(data)
                 metadata = validate_audio(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(
@@ -564,10 +578,16 @@ class Handler(BaseHTTPRequestHandler):
                     local_path=str(destination),
                     mime_type=mime_type,
                     tags=[tag.strip() for tag in fields.get("tags", "").split(",")],
-                    rights_status=fields.get("rights_status", "pending_review"),
+                    rights_status="pending_review",
                     metadata=metadata,
                 )
+                created_asset_id = asset["id"]
+                if requested_rights != "pending_review":
+                    action = "approve_owned" if requested_rights == "owned_distribution" else "approve_licensed"
+                    asset = review_asset(self.app.db, asset["id"], action, f"Audio upload attestation: {requested_rights.replace('_', ' ')}")
             except Exception:
+                if created_asset_id:
+                    self.app.db.delete("assets", "id", created_asset_id)
                 destination.unlink(missing_ok=True)
                 raise
             self.send_json({"asset": asset}, HTTPStatus.CREATED)

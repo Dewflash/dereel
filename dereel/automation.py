@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import VIDEO_EXTENSIONS, safe_extension, sha256_file, validate_video
-from .pipeline import PRODUCTION_RIGHTS, create_asset, create_project, plan_project, render_project
+from .pipeline import PRODUCTION_RIGHTS, create_asset, create_project, plan_project, render_project, review_asset
 from .publisher import create_publish_jobs
 from .scout import import_provider_asset, search as search_provider
 
@@ -305,6 +305,7 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
     files = sorted((item for item in watch_dir.iterdir() if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS), key=lambda item: item.name.lower())
     for source in files:
         destination: Path | None = None
+        created_asset_id = ""
         try:
             if source.stat().st_size > MAX_WATCH_BYTES:
                 raise ValueError(f"File exceeds the {MAX_WATCH_BYTES // (1024 * 1024)} MB limit")
@@ -321,6 +322,7 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
             shutil.copy2(source, destination)
             metadata["fingerprint"] = fingerprint
             metadata["watch_source"] = str(source)
+            requested_rights = automation["default_rights"]
             asset = create_asset(
                 db,
                 kind="media",
@@ -330,12 +332,18 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
                 local_path=str(destination),
                 mime_type=content_type,
                 tags=automation["tags"],
-                rights_status=automation["default_rights"],
+                rights_status="pending_review",
                 metadata=metadata,
                 automation_id=automation["id"],
             )
+            created_asset_id = asset["id"]
+            if requested_rights != "pending_review":
+                action = "approve_owned" if requested_rights == "owned_distribution" else "approve_licensed"
+                asset = review_asset(db, asset["id"], action, f"Automation attestation: {requested_rights.replace('_', ' ')}")
             imported.append(asset)
         except Exception as error:
+            if created_asset_id:
+                db.delete("assets", "id", created_asset_id)
             if destination:
                 destination.unlink(missing_ok=True)
             errors.append({"file": source.name, "error": str(error)[:300]})
