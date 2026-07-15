@@ -94,7 +94,9 @@ h3 { margin: 7px 0 0; font-size: 16px; letter-spacing: -.15px; }
 .status-pill { flex: 0 0 auto; border: 1px solid var(--line-bright); border-radius: 99px; padding: 4px 8px; color: var(--muted); font-size: 9px; font-weight: 800; text-transform: uppercase; letter-spacing: .6px; }
 .status-pill.ready, .status-pill.completed, .status-pill.approved, .status-pill.configured, .status-pill.connected, .status-pill.passed { border-color: #315d50; color: var(--mint); }
 .status-pill.failed, .status-pill.rejected { border-color: #693a38; color: var(--danger); }
+.status-pill.missing, .status-pill.invalid, .status-pill.changed { border-color: #693a38; color: var(--danger); }
 .status-pill.running, .status-pill.planning { border-color: #6d5135; color: var(--accent); }
+.status-pill.unchecked, .status-pill.reference { border-color: var(--line-bright); color: var(--dim); }
 .empty-state { display: grid; place-items: center; min-height: 150px; padding: 25px; color: var(--dim); text-align: center; }
 .empty-state span { margin-bottom: 12px; color: var(--accent); font-size: 24px; }
 .empty-state strong { color: var(--muted); font-size: 12px; }
@@ -167,6 +169,7 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .inspector-link { min-width: 0; overflow-wrap: anywhere; color: var(--cyan); font-size: 11px; line-height: 1.45; }
 .asset-flags { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 13px; align-items: start; padding-top: 8px; }
 .asset-flags > div { display: flex; flex-wrap: wrap; gap: 5px; }
+.health-detail { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.4; }
 .inspector-form { border-left: 1px solid var(--line); padding-left: 22px; }
 .library-heading { align-items: center; }
 .library-tools { display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-width: 0; }

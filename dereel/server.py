@@ -33,11 +33,13 @@ from .media import available_filters, safe_extension, sha256_file, validate_audi
 from .pipeline import (
     add_project_asset,
     analyze_asset,
+    audit_asset_health,
     asset_view,
     bulk_review_assets,
     create_asset,
     create_job,
     create_project,
+    check_asset_health,
     delete_project,
     get_project_assets,
     list_assets,
@@ -591,6 +593,19 @@ class Handler(BaseHTTPRequestHandler):
             now = now_iso()
             self.app.db.insert("publishing_accounts", {"id": account_id, "platform": platform, "label": str(payload.get("label") or platform.title()), "status": "not_connected", "config_json": json_dumps(config), "created_at": now, "updated_at": now})
             self.send_json({"account": self.app.db.get("publishing_accounts", "id", account_id)}, HTTPStatus.CREATED)
+            return
+        if path == "/api/assets/health-check":
+            payload = self.read_json()
+            asset_ids = payload.get("ids")
+            if asset_ids is not None and not isinstance(asset_ids, list):
+                raise ValueError("ids must be a list")
+            if asset_ids == []:
+                raise ValueError("Select at least one asset, or omit ids to check the library")
+            self.send_json({"report": audit_asset_health(self.app.db, asset_ids)})
+            return
+        match = re.fullmatch(r"/api/assets/([^/]+)/health", path)
+        if match:
+            self.send_json({"asset": check_asset_health(self.app.db, match.group(1))})
             return
         match = re.fullmatch(r"/api/assets/([^/]+)/analyze", path)
         if match:

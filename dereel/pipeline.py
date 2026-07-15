@@ -42,6 +42,13 @@ def review_flags(row: dict[str, Any]) -> list[str]:
         flags.append("reference-only")
     if row.get("kind") == "media" and not row.get("local_path"):
         flags.append("missing-local-file")
+    health = row.get("health") or {}
+    if health.get("checked_at") and health.get("status") == "missing":
+        flags.append("missing-local-file")
+    if health.get("checked_at") and health.get("status") == "invalid":
+        flags.append("invalid-media")
+    if health.get("checked_at") and health.get("status") == "changed":
+        flags.append("file-changed")
     if row.get("rights_status") == "pending_review":
         flags.append("provider-license-review" if row.get("platform") in {"pexels", "pixabay"} else "rights-attestation")
     if row.get("rights_status") == "blocked":
@@ -51,11 +58,24 @@ def review_flags(row: dict[str, Any]) -> list[str]:
     return flags
 
 
+def asset_health(row: dict[str, Any]) -> dict[str, Any]:
+    analysis = row.get("analysis") if isinstance(row.get("analysis"), dict) else json_loads(row.get("analysis_json"), {})
+    stored = analysis.get("health") if isinstance(analysis, dict) else None
+    if isinstance(stored, dict):
+        return stored
+    if row.get("kind") == "reference":
+        return {"status": "reference", "problems": [], "checked_at": ""}
+    if not row.get("local_path") or not Path(str(row.get("local_path"))).is_file():
+        return {"status": "missing", "problems": ["Media file is missing"], "checked_at": ""}
+    return {"status": "unchecked", "problems": [], "checked_at": ""}
+
+
 def asset_view(row: dict[str, Any]) -> dict[str, Any]:
     result = dict(row)
     result["tags"] = json_loads(result.pop("tags_json", "[]"), [])
     result["analysis"] = json_loads(result.pop("analysis_json", "{}"), {})
     result["has_audio"] = bool(result.get("has_audio"))
+    result["health"] = asset_health(result)
     result["review_flags"] = review_flags(result)
     result["provenance"] = asset_provenance(result)
     return result
@@ -307,6 +327,58 @@ def analyze_asset(db: Database, asset_id: str) -> dict[str, Any]:
         },
     )
     return asset_view(db.get("assets", "id", asset_id) or {})
+
+
+def check_asset_health(db: Database, asset_id: str) -> dict[str, Any]:
+    asset = db.get("assets", "id", asset_id)
+    if not asset:
+        raise KeyError("Asset not found")
+    analysis = json_loads(asset.get("analysis_json"), {})
+    checked_at = now_iso()
+    if asset.get("kind") == "reference":
+        report = {"status": "reference", "problems": [], "checked_at": checked_at}
+    else:
+        path = Path(str(asset.get("local_path") or ""))
+        if not path.is_file():
+            report = {"status": "missing", "problems": ["Media file is missing"], "checked_at": checked_at}
+        else:
+            try:
+                validator = validate_audio if str(asset.get("mime_type") or "").startswith("audio/") else validate_video
+                metadata = validator(path)
+                fingerprint = sha256_file(path)
+                problems: list[str] = []
+                status = "passed"
+                if asset.get("fingerprint") and asset["fingerprint"] != fingerprint:
+                    status = "changed"
+                    problems.append("File fingerprint changed since import")
+                report = {"status": status, "problems": problems, "checked_at": checked_at, "fingerprint": fingerprint, "duration": metadata.get("duration", 0), "file_size": metadata.get("file_size", 0)}
+            except Exception as error:
+                report = {"status": "invalid", "problems": [str(error)], "checked_at": checked_at}
+    analysis["health"] = report
+    values = {"analysis_json": json_dumps(analysis), "updated_at": checked_at}
+    if report.get("status") == "passed" and not asset.get("fingerprint"):
+        values["fingerprint"] = report["fingerprint"]
+    db.update("assets", "id", asset_id, values)
+    return asset_view(db.get("assets", "id", asset_id) or {})
+
+
+def audit_asset_health(db: Database, asset_ids: list[str] | None = None) -> dict[str, Any]:
+    normalized = list(dict.fromkeys(str(asset_id).strip() for asset_id in (asset_ids or []) if str(asset_id).strip()))
+    if len(normalized) > 200:
+        raise ValueError("Health checks are limited to 200 assets per action")
+    if normalized:
+        placeholders = ", ".join("?" for _ in normalized)
+        with db.connection() as connection:
+            rows = connection.execute(f"SELECT id FROM assets WHERE kind = 'media' AND id IN ({placeholders})", normalized).fetchall()
+        ids = [str(row["id"]) for row in rows]
+        if len(ids) != len(normalized):
+            raise KeyError("One or more selected media assets no longer exist")
+    else:
+        with db.connection() as connection:
+            ids = [str(row["id"]) for row in connection.execute("SELECT id FROM assets WHERE kind = 'media' ORDER BY updated_at DESC LIMIT 200").fetchall()]
+    checked = [check_asset_health(db, asset_id) for asset_id in ids]
+    counts = {status: sum(1 for asset in checked if asset["health"]["status"] == status) for status in ("passed", "missing", "invalid", "changed")}
+    return {"checked": len(checked), **counts, "assets": checked}
 
 
 def list_assets(db: Database, view: str = "all") -> list[dict[str, Any]]:

@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, bulk_review_assets, create_asset, create_job, create_project, delete_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources
 from dereel.publisher import account_view, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
@@ -125,6 +125,32 @@ class CoreModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "awaiting review"):
                 bulk_review_assets(db, [pending["id"], reference["id"]], "approve_owned")
             self.assertEqual(db.get("assets", "id", pending["id"])["rights_status"], "pending_review")
+
+    def test_asset_health_detects_missing_changed_invalid_and_recovered_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            missing = create_asset(db, kind="media", title="Missing", local_path=str(root / "gone.mp4"), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280})
+            missing_checked = check_asset_health(db, missing["id"])
+            self.assertEqual(missing_checked["health"]["status"], "missing")
+            self.assertIn("missing-local-file", missing_checked["review_flags"])
+            baseline_path = root / "baseline.mp4"
+            baseline_path.write_bytes(b"baseline")
+            baseline = create_asset(db, kind="media", title="Baseline", local_path=str(baseline_path), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280})
+            with patch("dereel.pipeline.validate_video", return_value={"duration": 2, "file_size": 8, "width": 720, "height": 1280, "has_audio": False}):
+                baseline_checked = check_asset_health(db, baseline["id"])
+            self.assertEqual(db.get("assets", "id", baseline["id"])["fingerprint"], baseline_checked["health"]["fingerprint"])
+            changed_path = root / "changed.mp4"
+            changed_path.write_bytes(b"changed")
+            changed = create_asset(db, kind="media", title="Changed", local_path=str(changed_path), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280, "fingerprint": "before"})
+            with patch("dereel.pipeline.validate_video", return_value={"duration": 2, "file_size": 7, "width": 720, "height": 1280, "has_audio": False}):
+                changed_checked = check_asset_health(db, changed["id"])
+            self.assertEqual(changed_checked["health"]["status"], "changed")
+            with patch("dereel.pipeline.validate_video", side_effect=ValueError("corrupt container")):
+                invalid = check_asset_health(db, changed["id"])
+            self.assertEqual(invalid["health"]["status"], "invalid")
+            report = audit_asset_health(db, [missing["id"]])
+            self.assertEqual((report["checked"], report["missing"]), (1, 1))
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_automation_imports_reviews_renders_and_deduplicates_batches(self) -> None:
