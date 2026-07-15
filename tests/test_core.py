@@ -528,6 +528,17 @@ class CoreModelTests(unittest.TestCase):
             report = scan_watch_folder(db, automation, root / "library")
             self.assertEqual((report["found"], report["imported"], report["errors"]), (0, [], []))
 
+    def test_watch_import_skips_a_dangling_symlink_during_scan(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watch_dir = root / "watch"
+            watch_dir.mkdir()
+            (watch_dir / "gone.mp4").symlink_to(root / "removed.mp4")
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Transient watch", "watch_dir": str(watch_dir)})
+            report = scan_watch_folder(db, automation, root / "library")
+            self.assertEqual((report["found"], report["imported"], report["errors"]), (0, [], []))
+
     def test_failed_output_validation_quarantines_unclaimed_publish_jobs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
