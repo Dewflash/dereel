@@ -483,12 +483,12 @@ def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None 
     return project_view(db, db.get("projects", "id", project_id) or {})
 
 
-def create_job(db: Database, project_id: str | None, kind: str) -> dict[str, Any]:
+def create_job(db: Database, project_id: str | None, kind: str, automation_id: str | None = None) -> dict[str, Any]:
     job_id = new_id("job")
     now = now_iso()
     db.insert(
         "jobs",
-        {"id": job_id, "project_id": project_id, "kind": kind, "status": "queued", "progress": 0, "message": "Queued", "error": "", "result_json": "{}", "created_at": now, "updated_at": now},
+        {"id": job_id, "project_id": project_id, "automation_id": automation_id, "kind": kind, "status": "queued", "progress": 0, "message": "Queued", "error": "", "result_json": "{}", "created_at": now, "updated_at": now},
     )
     return db.get("jobs", "id", job_id) or {}
 

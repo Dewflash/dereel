@@ -72,7 +72,11 @@ def recover_interrupted_jobs(db: Database) -> list[str]:
     recovered: list[str] = []
     timestamp = now_iso()
     with db.connection() as connection:
-        rows = connection.execute("SELECT id, kind, project_id FROM jobs WHERE status IN ('queued', 'running')").fetchall()
+        connection.execute(
+            "UPDATE automations SET status = 'idle', updated_at = ? WHERE status IN ('queued', 'running')",
+            (timestamp,),
+        )
+        rows = connection.execute("SELECT id, kind, project_id, automation_id FROM jobs WHERE status IN ('queued', 'running')").fetchall()
         for row in rows:
             connection.execute(
                 "UPDATE jobs SET status = 'failed', message = ?, error = ?, updated_at = ? WHERE id = ?",
@@ -83,11 +87,12 @@ def recover_interrupted_jobs(db: Database) -> list[str]:
                     "UPDATE projects SET status = 'failed', updated_at = ? WHERE id = ? AND status IN ('planning', 'rendering')",
                     (timestamp, row["project_id"]),
                 )
+            if row["kind"] == "automation" and row["automation_id"]:
+                connection.execute(
+                    "UPDATE automations SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
+                    (INTERRUPTED_JOB_ERROR, timestamp, row["automation_id"]),
+                )
             recovered.append(str(row["id"]))
-        connection.execute(
-            "UPDATE automations SET status = 'idle', updated_at = ? WHERE status IN ('queued', 'running')",
-            (timestamp,),
-        )
     return recovered
 
 
@@ -185,13 +190,13 @@ class AppState:
             raise KeyError("Automation not found")
         if not claim_automation(self.db, automation_id):
             raise ValueError("Automation is already running")
-        job = create_job(self.db, None, "automation")
+        job = create_job(self.db, None, "automation", automation_id)
         return self.submit_automation(job, automation_id)
 
     def queue_due_automations(self) -> None:
         for automation in due_automations(self.db):
             if claim_automation(self.db, automation["id"]):
-                job = create_job(self.db, None, "automation")
+                job = create_job(self.db, None, "automation", automation["id"])
                 self.submit_automation(job, automation["id"])
 
     def scheduler_loop(self) -> None:

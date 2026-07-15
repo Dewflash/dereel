@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import unittest
 import shutil
@@ -33,6 +34,45 @@ class CoreModelTests(unittest.TestCase):
             )
             self.assertEqual(asset["rights_status"], "private_reference")
             self.assertEqual(asset["tags"], ["cats", "funny"])
+            with db.connection() as connection:
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
+                schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
+            self.assertIn("automation_id", columns)
+            self.assertEqual(schema_version, "4")
+
+    def test_database_migrates_legacy_jobs_with_automation_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database_path = Path(directory) / "legacy.sqlite3"
+            connection = sqlite3.connect(database_path)
+            connection.executescript(
+                """
+                CREATE TABLE schema_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO schema_meta(key, value) VALUES ('schema_version', '3');
+                CREATE TABLE jobs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT,
+                    kind TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    progress REAL NOT NULL DEFAULT 0,
+                    message TEXT NOT NULL DEFAULT '',
+                    error TEXT,
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+                """
+            )
+            connection.commit()
+            connection.close()
+
+            db = Database(database_path)
+            with db.connection() as migrated:
+                columns = {row[1] for row in migrated.execute("PRAGMA table_info(jobs)").fetchall()}
+                schema_version = migrated.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
+                index_names = {row[1] for row in migrated.execute("PRAGMA index_list(jobs)").fetchall()}
+            self.assertIn("automation_id", columns)
+            self.assertIn("idx_jobs_automation", index_names)
+            self.assertEqual(schema_version, "4")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -158,6 +198,7 @@ class CoreModelTests(unittest.TestCase):
             automation = create_automation(db=app.db, payload={"name": "Rejected", "watch_dir": str(root)})
             with patch("dereel.server.JOB_POOL", RejectingPool()):
                 job = app.queue_automation(automation["id"])
+            self.assertEqual(job["automation_id"], automation["id"])
             self.assertEqual(job["status"], "failed")
             self.assertEqual(job["error"], "worker pool unavailable")
             stored = app.db.get("automations", "id", automation["id"])
@@ -172,11 +213,19 @@ class CoreModelTests(unittest.TestCase):
             db.update("projects", "id", project["id"], {"status": "rendering"})
             job = create_job(db, project["id"], "render")
             set_job(db, job["id"], status="running", message="Preparing render")
+            automation = create_automation(db, {"name": "Interrupted automation", "watch_dir": str(root)})
+            db.update("automations", "id", automation["id"], {"status": "running"})
+            automation_job = create_job(db, None, "automation", automation["id"])
+            set_job(db, automation_job["id"], status="running", message="Scanning watch folder")
             recovered = recover_interrupted_jobs(db)
-            self.assertEqual(recovered, [job["id"]])
+            self.assertEqual(recovered, [job["id"], automation_job["id"]])
             stored_job = db.get("jobs", "id", job["id"])
             self.assertEqual((stored_job["status"], stored_job["error"]), ("failed", "Interrupted by process restart"))
             self.assertEqual(db.get("projects", "id", project["id"])["status"], "failed")
+            stored_automation_job = db.get("jobs", "id", automation_job["id"])
+            self.assertEqual((stored_automation_job["status"], stored_automation_job["error"]), ("failed", "Interrupted by process restart"))
+            stored_automation = db.get("automations", "id", automation["id"])
+            self.assertEqual((stored_automation["status"], stored_automation["last_error"]), ("failed", "Interrupted by process restart"))
 
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

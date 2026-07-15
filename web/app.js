@@ -77,7 +77,10 @@ function renderDashboard(data, diagnostics = {}) {
   const projects = data.recent_projects || [];
   $("#recent-projects").innerHTML = projects.length ? projects.map(projectRow).join("") : empty("No projects yet", "Create a brief in Forge to start an edit.");
   const jobs = data.jobs || [];
-  $("#job-list").innerHTML = jobs.length ? jobs.map((job) => `<div class="job-row"><div class="row-icon">${job.kind === "render" ? "▶" : "•"}</div><div class="row-main"><strong>${escapeHtml(job.message || job.kind)}</strong><small>${escapeHtml(job.project_id || "Workspace job")}</small></div>${statusPill(job.status)}</div>`).join("") : empty("No jobs yet", "Render and analysis jobs will appear here.");
+  $("#job-list").innerHTML = jobs.length ? jobs.map((job) => {
+    const target = job.project_id || job.automation_id || "Workspace job";
+    return `<div class="job-row"><div class="row-icon">${job.kind === "render" ? "▶" : "•"}</div><div class="row-main"><strong>${escapeHtml(job.message || job.kind)}</strong><small>${escapeHtml(target)}</small></div>${statusPill(job.status)}</div>`;
+  }).join("") : empty("No jobs yet", "Render and analysis jobs will appear here.");
   renderDiagnostics(diagnostics);
   $("#health-label").textContent = "ready";
 }

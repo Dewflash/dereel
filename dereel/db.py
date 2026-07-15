@@ -168,6 +168,7 @@ class Database:
                 CREATE TABLE IF NOT EXISTS jobs (
                     id TEXT PRIMARY KEY,
                     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                    automation_id TEXT REFERENCES automations(id) ON DELETE SET NULL,
                     kind TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
                     progress REAL NOT NULL DEFAULT 0,
@@ -202,7 +203,7 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '3');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '4');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -226,6 +227,11 @@ class Database:
             for column, definition in automation_migrations.items():
                 if column not in automation_columns:
                     connection.execute(f"ALTER TABLE automations ADD COLUMN {column} {definition}")
+            job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
+            if "automation_id" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN automation_id TEXT")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_automation ON jobs(automation_id)")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '4')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:
