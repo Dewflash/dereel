@@ -485,6 +485,21 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual([(track["asset_id"], track["role"], track["volume"]) for track in updated["audio"]], [(music["id"], "music", 0.2)])
             self.assertFalse(updated["settings"]["add_title_card"])
 
+    def test_project_edits_are_blocked_while_publish_job_is_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Release lock", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(root / "output")})
+            db.insert("publish_jobs", {"id": "publish_lock", "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            with self.assertRaisesRegex(ValueError, "pending publish job"):
+                update_project(db, project["id"], {"name": "Changed"})
+            with self.assertRaisesRegex(ValueError, "pending publish job"):
+                plan_project(db, project["id"])
+            db.update("publish_jobs", "id", "publish_lock", {"status": "failed", "cancelled_at": "2026-01-01T00:00:00+00:00"})
+            changed = update_project(db, project["id"], {"name": "Changed"})
+            self.assertEqual(changed["name"], "Changed")
+
     def test_publishing_requires_a_fresh_ready_project(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")
