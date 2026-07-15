@@ -174,13 +174,39 @@ def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str
     filename = re.sub(r"[^a-zA-Z0-9._-]+", "-", Path(urllib.parse.urlparse(download_url).path).name or "provider-video")
     asset_file_id = new_id("asset")
     destination: Path | None = None
+    content_type = "video/mp4"
+    retries = 0
     try:
-        with urllib.request.urlopen(request, timeout=60) as response:
-            if not _host_allowed(provider, response.geturl()):
-                raise ValueError("Provider redirected the media request to an unapproved host")
-            content_type = response.headers.get_content_type()
-            destination = destination_dir / f"{asset_file_id}{safe_extension(filename, content_type)}"
-            atomic_write_stream(response, destination, max_bytes=800 * 1024 * 1024)
+        while True:
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    if not _host_allowed(provider, response.geturl()):
+                        raise ValueError("Provider redirected the media request to an unapproved host")
+                    content_type = response.headers.get_content_type()
+                    destination = destination_dir / f"{asset_file_id}{safe_extension(filename, content_type)}"
+                    atomic_write_stream(response, destination, max_bytes=800 * 1024 * 1024)
+                break
+            except urllib.error.HTTPError as error:
+                if (error.code == 429 or 500 <= error.code <= 599) and retries < PROVIDER_RETRY_LIMIT:
+                    retry_after = str(error.headers.get("Retry-After") or "").strip()
+                    try:
+                        delay = min(max(float(retry_after), 0.0), 20.0) if retry_after else min(2.0 ** retries, 4.0)
+                    except ValueError:
+                        delay = min(2.0 ** retries, 4.0)
+                    retries += 1
+                    error.close()
+                    time.sleep(delay)
+                    continue
+                detail = error.read().decode("utf-8", "replace")[:300]
+                raise RuntimeError(f"Provider download returned HTTP {error.code}: {detail}") from error
+            except urllib.error.URLError as error:
+                if retries < PROVIDER_RETRY_LIMIT:
+                    retries += 1
+                    time.sleep(min(2.0 ** (retries - 1), 4.0))
+                    continue
+                raise RuntimeError(f"Provider download failed: {error.reason}") from error
+        if destination is None:
+            raise RuntimeError("Provider download produced no media file")
         metadata = validate_video(destination)
         metadata["fingerprint"] = sha256_file(destination)
         if provider_id:

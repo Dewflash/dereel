@@ -1186,6 +1186,53 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(sleep.call_count, 2)
 
+    def test_provider_download_retries_transient_network_failure(self) -> None:
+        class Headers:
+            def get_content_type(self) -> str:
+                return "video/mp4"
+
+        class FakeResponse:
+            headers = Headers()
+
+            def __init__(self, fail_on_second_read: bool = False):
+                self.read_calls = 0
+                self.fail_on_second_read = fail_on_second_read
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def geturl(self) -> str:
+                return "https://videos.pexels.com/clip.mp4"
+
+            def read(self, _size: int) -> bytes:
+                self.read_calls += 1
+                if self.fail_on_second_read and self.read_calls == 2:
+                    raise urllib_error.URLError("temporary stream interruption")
+                return b"video" if self.read_calls == 1 else b""
+
+        calls = []
+
+        def fake_urlopen(request, timeout):
+            calls.append((request, timeout))
+            return FakeResponse(fail_on_second_read=len(calls) == 1)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            with patch("dereel.scout.urllib.request.urlopen", side_effect=fake_urlopen), patch("dereel.scout.validate_video", return_value={"duration": 2, "width": 720, "height": 1280}), patch("dereel.scout.sha256_file", return_value="provider-fingerprint"), patch("dereel.scout.create_asset", return_value={"id": "asset_provider"}) as creator:
+                with patch("dereel.scout.time.sleep") as sleep:
+                    result = import_provider_asset(db, root / "library", {"provider": "pexels", "provider_id": "1", "download_url": "https://videos.pexels.com/clip.mp4", "source_url": "https://www.pexels.com/video/1", "title": "Provider clip"})
+
+            self.assertEqual(result["id"], "asset_provider")
+            self.assertEqual(len(calls), 2)
+            self.assertEqual(sleep.call_count, 1)
+            self.assertEqual([path.suffix for path in (root / "library").iterdir()], [".mp4"])
+            self.assertEqual(list((root / "library").glob("*.part")), [])
+            creator.assert_called_once()
+
     def test_provider_import_skips_existing_source_before_download(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
