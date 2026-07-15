@@ -1,13 +1,12 @@
 from __future__ import annotations
 
 import mimetypes
-import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import VIDEO_EXTENSIONS, safe_extension, sha256_file, validate_video
+from .media import VIDEO_EXTENSIONS, atomic_copy_file, safe_extension, sha256_file, validate_video
 from .pipeline import PRODUCTION_RIGHTS, cleanup_pending_asset, create_asset, create_project, plan_project, production_health_error, render_project, review_asset
 from .publisher import create_publish_jobs
 from .scout import import_provider_asset, search as search_provider
@@ -355,7 +354,7 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
             asset_id = new_id("asset")
             content_type = mimetypes.guess_type(source.name)[0] or "video/mp4"
             destination = originals_dir / f"{asset_id}{safe_extension(source.name, content_type)}"
-            shutil.copy2(source, destination)
+            atomic_copy_file(source, destination, max_bytes=MAX_WATCH_BYTES)
             metadata["fingerprint"] = fingerprint
             metadata["watch_source"] = str(source)
             requested_rights = automation["default_rights"]

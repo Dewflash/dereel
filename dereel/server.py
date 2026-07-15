@@ -30,7 +30,7 @@ from .automation import (
     set_automation_running,
     update_automation,
 )
-from .media import available_filters, pillow_text_overlay_available, safe_extension, sha256_file, validate_audio, validate_video
+from .media import atomic_write_stream, available_filters, pillow_text_overlay_available, safe_extension, sha256_file, validate_audio, validate_video
 from .pipeline import (
     add_project_asset,
     analyze_asset,
@@ -795,8 +795,7 @@ class Handler(BaseHTTPRequestHandler):
             destination = self.app.settings.originals_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
             created_asset_id = ""
             try:
-                with destination.open("wb") as output:
-                    shutil.copyfileobj(data, output, FILE_STREAM_CHUNK_SIZE)
+                atomic_write_stream(data, destination, FILE_STREAM_CHUNK_SIZE, MAX_UPLOAD_BYTES)
                 metadata = validate_video(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(
@@ -842,8 +841,7 @@ class Handler(BaseHTTPRequestHandler):
             destination = self.app.settings.audio_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
             created_asset_id = ""
             try:
-                with destination.open("wb") as output:
-                    shutil.copyfileobj(data, output, FILE_STREAM_CHUNK_SIZE)
+                atomic_write_stream(data, destination, FILE_STREAM_CHUNK_SIZE, MAX_UPLOAD_BYTES)
                 metadata = validate_audio(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(

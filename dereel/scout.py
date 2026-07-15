@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, new_id
-from .media import safe_extension, sha256_file, validate_video
+from .media import atomic_write_stream, safe_extension, sha256_file, validate_video
 from .pipeline import create_asset
 
 
@@ -161,13 +161,7 @@ def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str
                 raise ValueError("Provider redirected the media request to an unapproved host")
             content_type = response.headers.get_content_type()
             destination = destination_dir / f"{asset_file_id}{safe_extension(filename, content_type)}"
-            with destination.open("wb") as output:
-                total = 0
-                while chunk := response.read(1024 * 1024):
-                    total += len(chunk)
-                    if total > 800 * 1024 * 1024:
-                        raise ValueError("Provider video exceeds the 800 MB limit")
-                    output.write(chunk)
+            atomic_write_stream(response, destination, max_bytes=800 * 1024 * 1024)
         metadata = validate_video(destination)
         metadata["fingerprint"] = sha256_file(destination)
         if provider_id:

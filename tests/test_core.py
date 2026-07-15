@@ -14,7 +14,7 @@ from urllib import error as urllib_error
 from urllib.parse import parse_qs
 
 from dereel.db import Database
-from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
+from dereel.media import add_text_overlay, atomic_write_stream, sha256_file, text_overlay_backend, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, cleanup_pending_asset, create_asset, create_job, create_project, delete_asset, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed, import_provider_asset, import_provider_assets
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
@@ -24,6 +24,28 @@ from dereel.server import AppState, Handler, close_multipart_files, finalize_pub
 
 
 class CoreModelTests(unittest.TestCase):
+    def test_atomic_stream_write_preserves_final_file_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            destination = root / "clip.mp4"
+            destination.write_bytes(b"previous")
+
+            class FailingStream:
+                def __init__(self) -> None:
+                    self.calls = 0
+
+                def read(self, _size: int) -> bytes:
+                    self.calls += 1
+                    if self.calls == 1:
+                        return b"partial"
+                    raise OSError("source interrupted")
+
+            with self.assertRaisesRegex(OSError, "source interrupted"):
+                atomic_write_stream(FailingStream(), destination)
+
+            self.assertEqual(destination.read_bytes(), b"previous")
+            self.assertEqual(list(root.glob("*.part")), [])
+
     def test_local_file_serving_supports_streaming_ranges_and_path_guards(self) -> None:
         class FakeHandler:
             serve_file = Handler.serve_file

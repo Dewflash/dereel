@@ -6,6 +6,7 @@ import mimetypes
 import os
 import shutil
 import subprocess
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -42,6 +43,30 @@ def sha256_file(path: Path) -> str:
         while chunk := source.read(1024 * 1024):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def atomic_write_stream(source: Any, destination: Path, chunk_size: int = 1024 * 1024, max_bytes: int | None = None) -> int:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".part", dir=destination.parent)
+    os.close(descriptor)
+    temporary = Path(temporary_name)
+    total = 0
+    try:
+        with temporary.open("wb") as output:
+            while chunk := source.read(chunk_size):
+                total += len(chunk)
+                if max_bytes is not None and total > max_bytes:
+                    raise ValueError(f"Media exceeds the {max_bytes // (1024 * 1024)} MB limit")
+                output.write(chunk)
+        os.replace(temporary, destination)
+        return total
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def atomic_copy_file(source: Path, destination: Path, chunk_size: int = 1024 * 1024, max_bytes: int | None = None) -> int:
+    with source.open("rb") as stream:
+        return atomic_write_stream(stream, destination, chunk_size, max_bytes)
 
 
 def probe(path: Path) -> dict[str, Any]:
