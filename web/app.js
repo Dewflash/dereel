@@ -192,7 +192,10 @@ function renderProviderResults(results = null) {
   const controls = `<div class="provider-batch-actions"><span class="count-label">${selectedCount} selected</span><button class="mini-button" data-action="select-provider-results">Select all</button><button class="mini-button" data-action="clear-provider-results">Clear</button><button class="mini-button" data-action="provider-import-selected" ${selectedCount ? "" : "disabled"}>Import selected</button></div>`;
   const cards = results.map((item) => {
     const key = `${item.provider}:${item.provider_id}`;
-    return `<article class="provider-result"><label class="provider-select"><input type="checkbox" data-provider-select="${escapeHtml(key)}" ${state.selectedProviderIds.has(key) ? "checked" : ""} /><span>Select</span></label><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong><small>${escapeHtml(item.provider)} · ${formatDuration(item.duration)} · ${item.width || "?"}x${item.height || "?"}</small><div class="asset-actions"><button class="mini-button" data-provider-save="${escapeHtml(key)}">Save reference</button><button class="mini-button" data-provider-import="${escapeHtml(key)}">Import for review</button></div></article>`;
+    const previewUrl = String(item.preview_url || "").trim();
+    const safePreview = item.provider === "pexels" && /^https:\/\/images\.pexels\.com\//i.test(previewUrl) ? previewUrl : "";
+    const preview = safePreview ? `<div class="provider-result-preview"><img src="${escapeHtml(safePreview)}" alt="" loading="lazy" /></div>` : "";
+    return `<article class="provider-result">${preview}<label class="provider-select"><input type="checkbox" data-provider-select="${escapeHtml(key)}" ${state.selectedProviderIds.has(key) ? "checked" : ""} /><span>Select</span></label><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong><small>${escapeHtml(item.provider)} · ${formatDuration(item.duration)} · ${item.width || "?"}x${item.height || "?"}</small><div class="asset-actions"><button class="mini-button" data-provider-save="${escapeHtml(key)}">Save reference</button><button class="mini-button" data-provider-import="${escapeHtml(key)}">Import for review</button></div></article>`;
   }).join("");
   $("#provider-results").innerHTML = controls + cards;
 }
