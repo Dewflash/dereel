@@ -587,6 +587,9 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             shutil.copy2(titled, destination)
             manifest["outputs"][platform] = str(destination)
         manifest["outputs"]["master"] = str(titled)
+        manifest["validation"] = validate_render_outputs(output_dir)
+        if manifest["validation"]["status"] != "passed":
+            raise ValueError("Rendered outputs failed validation: " + "; ".join(manifest["validation"]["problems"]))
         manifest["overlay_applied"] = overlay_applied
         manifest["title_treatment"] = {"requested": add_title_card, "applied": overlay_applied, "mode": treatment_mode}
         caption_path = output_dir / "captions.srt"
@@ -610,3 +613,24 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         return {"output_dir": str(output_dir), "manifest": manifest}
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
+
+
+def validate_render_outputs(output_dir: Path) -> dict[str, Any]:
+    report: dict[str, Any] = {"status": "passed", "problems": [], "outputs": {}}
+    for name in ("master", "youtube", "instagram", "tiktok"):
+        path = output_dir / ("final.mp4" if name == "master" else f"{name}.mp4")
+        entry: dict[str, Any] = {"path": str(path), "status": "passed", "problems": []}
+        try:
+            metadata = validate_video(path)
+            entry.update({key: metadata[key] for key in ("duration", "width", "height", "has_audio", "file_size")})
+            if metadata["width"] != 1080 or metadata["height"] != 1920:
+                entry["problems"].append("Expected 1080x1920 vertical output")
+        except Exception as error:
+            entry["status"] = "failed"
+            entry["problems"].append(str(error))
+        if entry["problems"]:
+            entry["status"] = "failed"
+            report["status"] = "failed"
+            report["problems"].append(f"{name}: " + "; ".join(entry["problems"]))
+        report["outputs"][name] = entry
+    return report

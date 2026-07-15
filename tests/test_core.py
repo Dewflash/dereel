@@ -11,7 +11,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, score_breakdown, set_job, update_project_asset
+from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, score_breakdown, set_job, update_project_asset, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
@@ -369,6 +369,8 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
             self.assertEqual(result["manifest"]["outputs"]["master"], str(output))
+            self.assertEqual(result["manifest"]["validation"]["status"], "passed")
+            self.assertEqual(set(result["manifest"]["validation"]["outputs"]), {"master", "youtube", "instagram", "tiktok"})
             self.assertEqual(result["manifest"]["inputs"][0]["provenance"]["source_type"], "local_import")
             self.assertIn(result["manifest"]["title_treatment"]["mode"], {"drawtext", "unavailable"})
             self.assertEqual(result["manifest"]["title_treatment"]["applied"], result["manifest"]["title_treatment"]["mode"] == "drawtext")
@@ -379,6 +381,12 @@ class CoreModelTests(unittest.TestCase):
             captions = Path(result["output_dir"]) / "captions.srt"
             self.assertTrue(captions.is_file())
             self.assertIn("1\n00:00:00,000", captions.read_text())
+
+    def test_render_output_validation_reports_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            report = validate_render_outputs(Path(directory))
+            self.assertEqual(report["status"], "failed")
+            self.assertEqual(set(report["outputs"]), {"master", "youtube", "instagram", "tiktok"})
 
     @unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"), "FFmpeg is required")
     def test_render_mixes_a_cleared_audio_bed(self) -> None:
