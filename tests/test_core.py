@@ -678,6 +678,25 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(publisher.call_args.kwargs["account_ids"], {"youtube": "new-account"})
             self.assertEqual(publisher.call_args.args[2], ["youtube"])
 
+    def test_automation_destination_removal_cancels_unclaimed_outbox_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Destination removal", "watch_dir": str(root), "platforms": ["youtube", "instagram"]})
+            project = create_project(db, {"name": "Existing output", "theme": "cats"})
+            db.update("automations", "id", automation["id"], {"last_project_id": project["id"]})
+            for platform in ("youtube", "instagram"):
+                db.insert("publish_jobs", {"id": f"pending-{platform}", "project_id": project["id"], "account_id": None, "platform": platform, "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            db.insert("publish_jobs", {"id": "claimed-instagram", "project_id": project["id"], "account_id": None, "platform": "instagram", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": "claim_live", "claimed_at": "2026-01-01", "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            update_automation(db, automation["id"], {"platforms": ["youtube"]})
+            youtube = db.get("publish_jobs", "id", "pending-youtube")
+            instagram = db.get("publish_jobs", "id", "pending-instagram")
+            claimed = db.get("publish_jobs", "id", "claimed-instagram")
+            self.assertEqual(youtube["status"], "ready")
+            self.assertEqual((instagram["status"], instagram["cancelled_at"], instagram["error"]), ("failed", instagram["cancelled_at"], "Destination removed from automation"))
+            self.assertTrue(instagram["cancelled_at"])
+            self.assertEqual((claimed["status"], claimed["cancelled_at"]), ("ready", None))
+
     def test_automation_submission_failure_is_persisted_and_releases_claim(self) -> None:
         class RejectingPool:
             def submit(self, *_args, **_kwargs):
