@@ -268,6 +268,14 @@ def bulk_review_assets(db: Database, asset_ids: list[str], action: str) -> list[
     return [by_id[asset_id] for asset_id in normalized_ids]
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     project_id = new_id("project")
     now = now_iso()
@@ -277,6 +285,8 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
     caption = str(payload.get("caption") or "")[:500]
     duration_target = max(8, min(float(payload.get("duration_target") or 35), 180))
     style = str(payload.get("style") or "kinetic")[:40]
+    add_title_card = _as_bool(payload.get("add_title_card"), True)
+    write_captions = _as_bool(payload.get("write_captions"), True)
     audio_tracks = _normalize_audio_tracks(db, payload)
     music_track = next((track for track in audio_tracks if track["role"] == "music"), None)
     db.insert(
@@ -292,7 +302,7 @@ def create_project(db: Database, payload: dict[str, Any]) -> dict[str, Any]:
             "title": title,
             "caption": caption,
             "output_dir": "",
-            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": True, "music_asset_id": music_track["asset_id"] if music_track else "", "music_volume": music_track["volume"] if music_track else 0.16, "audio_tracks": audio_tracks}),
+            "settings_json": json_dumps({"clip_gap": 0, "add_title_card": add_title_card, "write_captions": write_captions, "music_asset_id": music_track["asset_id"] if music_track else "", "music_volume": music_track["volume"] if music_track else 0.16, "audio_tracks": audio_tracks}),
             "manifest_json": json_dumps({}),
             "created_at": now,
             "updated_at": now,
@@ -525,9 +535,14 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             base = mixed
             manifest["audio"] = {"tracks": manifest_tracks}
             progress(0.84, f"Mixed {len(mix_inputs)} audio track{'' if len(mix_inputs) == 1 else 's'}")
+        add_title_card = _as_bool(settings.get("add_title_card"), True)
+        write_captions = _as_bool(settings.get("write_captions"), True)
         titled = output_dir / "final.mp4"
-        overlay_applied = add_text_overlay(base, titled, project["title"] or project["name"], project["caption"])
+        overlay_applied = add_text_overlay(base, titled, project["title"] or project["name"], project["caption"]) if add_title_card else False
+        if not add_title_card:
+            shutil.copy2(base, titled)
         base.unlink(missing_ok=True)
+        treatment_mode = "drawtext" if overlay_applied else "disabled" if not add_title_card else "unavailable"
         progress(0.9, "Applied title and caption treatment" if overlay_applied else "Rendered without optional text filter")
         for platform in ("youtube", "instagram", "tiktok"):
             destination = output_dir / f"{platform}.mp4"
@@ -535,9 +550,13 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             manifest["outputs"][platform] = str(destination)
         manifest["outputs"]["master"] = str(titled)
         manifest["overlay_applied"] = overlay_applied
+        manifest["title_treatment"] = {"requested": add_title_card, "applied": overlay_applied, "mode": treatment_mode}
         caption_path = output_dir / "captions.srt"
-        caption_written = write_caption_track(caption_path, project["caption"], sum(item["duration"] for item in manifest["inputs"]))
-        manifest["captions"] = {"path": str(caption_path), "written": caption_written, "mode": "static_project_caption" if caption_written else "none"}
+        caption_written = write_caption_track(caption_path, project["caption"], sum(item["duration"] for item in manifest["inputs"])) if write_captions else False
+        if not write_captions:
+            caption_path.unlink(missing_ok=True)
+        caption_mode = "static_project_caption" if caption_written else "disabled" if not write_captions else "none"
+        manifest["captions"] = {"path": str(caption_path), "written": caption_written, "mode": caption_mode}
         manifest_path = output_dir / "render-manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
         credit_assets = [item["asset_id"] for item in enabled]

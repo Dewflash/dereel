@@ -197,6 +197,14 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(project["format"], "vertical_9_16")
             self.assertEqual(project["status"], "draft")
             self.assertEqual(project["assets"], [])
+            self.assertTrue(project["settings"]["add_title_card"])
+            self.assertTrue(project["settings"]["write_captions"])
+
+    def test_project_text_treatment_settings_normalize_boolean_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "No treatment", "theme": "quiet", "add_title_card": "false", "write_captions": 0})
+            self.assertEqual((project["settings"]["add_title_card"], project["settings"]["write_captions"]), (False, False))
 
     def test_score_prefers_theme_matches_and_short_clips(self) -> None:
         matching = {"title": "cat surprise", "tags_json": '["cats","funny"]', "duration": 6, "width": 1080, "height": 1920, "has_audio": 1}
@@ -357,6 +365,9 @@ class CoreModelTests(unittest.TestCase):
             self.assertGreater(output.stat().st_size, 0)
             self.assertEqual(result["manifest"]["outputs"]["master"], str(output))
             self.assertEqual(result["manifest"]["inputs"][0]["provenance"]["source_type"], "local_import")
+            self.assertIn(result["manifest"]["title_treatment"]["mode"], {"drawtext", "unavailable"})
+            self.assertEqual(result["manifest"]["title_treatment"]["applied"], result["manifest"]["title_treatment"]["mode"] == "drawtext")
+            self.assertEqual(result["manifest"]["captions"]["mode"], "static_project_caption")
             credits = json.loads((Path(result["output_dir"]) / "credits.json").read_text())
             self.assertEqual(credits["assets"], [asset["id"]])
             self.assertEqual(credits["provenance"][0]["fingerprint"], asset["fingerprint"])
