@@ -5,12 +5,13 @@ import mimetypes
 import re
 import shutil
 import threading
+import tempfile
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 from urllib.parse import parse_qs, unquote, urlparse
 
 from .config import Settings, settings
@@ -62,6 +63,8 @@ from .scout import configured_providers, import_provider_asset, search as search
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
 FILE_STREAM_CHUNK_SIZE = 1024 * 1024
+MULTIPART_SPOOL_MEMORY_BYTES = 8 * 1024 * 1024
+MAX_MULTIPART_HEADER_BYTES = 64 * 1024
 JOB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dereel-job")
 INTERRUPTED_JOB_ERROR = "Interrupted by process restart"
 
@@ -146,11 +149,15 @@ def recover_interrupted_jobs(db: Database) -> list[str]:
     return recovered
 
 
-def parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, tuple[str, bytes, str]]]:
+def _multipart_boundary(content_type: str) -> bytes:
     match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
     if not match:
         raise ValueError("Multipart boundary is missing")
-    boundary = (match.group(1) or match.group(2)).strip().encode()
+    return (match.group(1) or match.group(2)).strip().encode()
+
+
+def parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, tuple[str, bytes, str]]]:
+    boundary = _multipart_boundary(content_type)
     fields: dict[str, str] = {}
     files: dict[str, tuple[str, bytes, str]] = {}
     delimiter = b"--" + boundary
@@ -169,7 +176,6 @@ def parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dic
         if not disposition:
             continue
         name, filename = disposition.groups()
-        content = content.rstrip(b"\r\n")
         content_type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers, re.IGNORECASE)
         part_type = content_type_match.group(1).strip() if content_type_match else "application/octet-stream"
         if filename is not None:
@@ -177,6 +183,149 @@ def parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dic
         else:
             fields[name] = content.decode("utf-8", "replace")
     return fields, files
+
+
+class _MultipartCursor:
+    def __init__(self, stream: BinaryIO, length: int):
+        self.stream = stream
+        self.remaining = max(0, length)
+        self.buffer = bytearray()
+
+    def _read_source(self, size: int) -> bytes:
+        if self.remaining <= 0:
+            return b""
+        chunk = self.stream.read(min(size, self.remaining))
+        if not chunk:
+            self.remaining = 0
+            return b""
+        self.remaining -= len(chunk)
+        return chunk
+
+    def read(self, size: int) -> bytes:
+        if size <= 0:
+            return b""
+        output = bytearray()
+        if self.buffer:
+            take = min(size, len(self.buffer))
+            output.extend(self.buffer[:take])
+            del self.buffer[:take]
+        if len(output) < size:
+            output.extend(self._read_source(size - len(output)))
+        return bytes(output)
+
+    def push_front(self, data: bytes) -> None:
+        if data:
+            self.buffer[:0] = data
+
+    def readline(self, limit: int = MAX_MULTIPART_HEADER_BYTES) -> bytes:
+        while True:
+            newline = self.buffer.find(b"\n")
+            if newline >= 0:
+                end = newline + 1
+                line = bytes(self.buffer[:end])
+                del self.buffer[:end]
+                if len(line) > limit:
+                    raise ValueError("Multipart header is too long")
+                return line
+            if len(self.buffer) >= limit:
+                raise ValueError("Multipart header is too long")
+            chunk = self._read_source(min(FILE_STREAM_CHUNK_SIZE, limit - len(self.buffer)))
+            if not chunk:
+                return bytes(self.buffer)
+            self.buffer.extend(chunk)
+
+
+def _stream_multipart_part(cursor: _MultipartCursor, destination: Any, boundary: bytes) -> bool:
+    marker = b"\r\n--" + boundary
+    keep = len(marker) + 2
+    pending = bytearray()
+    while True:
+        chunk = cursor.read(FILE_STREAM_CHUNK_SIZE)
+        if chunk:
+            pending.extend(chunk)
+        while True:
+            index = pending.find(marker)
+            if index < 0:
+                if len(pending) > keep:
+                    flush_length = len(pending) - keep
+                    destination.write(pending[:flush_length])
+                    del pending[:flush_length]
+                break
+            suffix_start = index + len(marker)
+            while len(pending) < suffix_start + 2:
+                extra = cursor.read(FILE_STREAM_CHUNK_SIZE)
+                if not extra:
+                    raise ValueError("Multipart body ended before its boundary")
+                pending.extend(extra)
+            suffix = bytes(pending[suffix_start:suffix_start + 2])
+            if suffix not in {b"\r\n", b"--"}:
+                destination.write(pending[:index + 1])
+                del pending[:index + 1]
+                continue
+            destination.write(pending[:index])
+            remainder = bytes(pending[suffix_start + 2:])
+            cursor.push_front(remainder)
+            return suffix == b"--"
+        if not chunk:
+            raise ValueError("Multipart body ended before its boundary")
+
+
+def parse_multipart_stream(
+    content_type: str,
+    stream: BinaryIO,
+    length: int,
+) -> tuple[dict[str, str], dict[str, tuple[str, Any, str]]]:
+    boundary = _multipart_boundary(content_type)
+    cursor = _MultipartCursor(stream, length)
+    opening = b"--" + boundary
+    first_line = cursor.readline()
+    if first_line == opening + b"--\r\n":
+        return {}, {}
+    if first_line != opening + b"\r\n":
+        raise ValueError("Multipart body has an invalid opening boundary")
+    fields: dict[str, str] = {}
+    files: dict[str, tuple[str, Any, str]] = {}
+    try:
+        while True:
+            header_lines: list[bytes] = []
+            while True:
+                line = cursor.readline()
+                if not line:
+                    raise ValueError("Multipart body ended inside part headers")
+                if line == b"\r\n":
+                    break
+                header_lines.append(line)
+            headers = b"".join(header_lines).decode("utf-8", "replace")
+            disposition = re.search(r'name="([^"]+)"(?:; filename="([^"]*)")?', headers, re.IGNORECASE)
+            content_type_match = re.search(r"Content-Type:\s*([^\r\n]+)", headers, re.IGNORECASE)
+            part_type = content_type_match.group(1).strip() if content_type_match else "application/octet-stream"
+            part = tempfile.SpooledTemporaryFile(max_size=MULTIPART_SPOOL_MEMORY_BYTES, mode="w+b")
+            try:
+                is_final = _stream_multipart_part(cursor, part, boundary)
+            except Exception:
+                part.close()
+                raise
+            part.seek(0)
+            if disposition:
+                name, filename = disposition.groups()
+                if filename is not None:
+                    files[name] = (filename, part, part_type)
+                else:
+                    fields[name] = part.read().decode("utf-8", "replace")
+                    part.close()
+            else:
+                part.close()
+            if is_final:
+                return fields, files
+    except Exception:
+        for _, (_, part, _) in files.items():
+            part.close()
+        raise
+
+
+def close_multipart_files(files: dict[str, tuple[str, Any, str]]) -> None:
+    for _, (_, part, _) in files.items():
+        part.close()
 
 
 def safe_path(root: Path, relative_or_absolute: str) -> Path:
@@ -352,9 +501,22 @@ class Handler(BaseHTTPRequestHandler):
             length = int(self.headers.get("Content-Length", "0"))
         except ValueError as error:
             raise ValueError("Invalid content length") from error
+        if length < 0:
+            raise ValueError("Invalid content length")
         if length > MAX_UPLOAD_BYTES:
             raise ValueError(f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
         return self.rfile.read(length)
+
+    def read_multipart(self) -> tuple[dict[str, str], dict[str, tuple[str, Any, str]]]:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as error:
+            raise ValueError("Invalid content length") from error
+        if length < 0:
+            raise ValueError("Invalid content length")
+        if length > MAX_UPLOAD_BYTES:
+            raise ValueError(f"Upload exceeds the {MAX_UPLOAD_BYTES // (1024 * 1024)} MB limit")
+        return parse_multipart_stream(self.headers.get("Content-Type", ""), self.rfile, length)
 
     def read_json(self) -> dict[str, Any]:
         body = self.read_body()
@@ -540,21 +702,21 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json({"asset": asset}, HTTPStatus.CREATED)
             return
         if path == "/api/assets/upload":
-            content_type = self.headers.get("Content-Type", "")
-            fields, files = parse_multipart(content_type, self.read_body())
+            fields, files = self.read_multipart()
             if "file" not in files:
+                close_multipart_files(files)
                 raise ValueError("A video file is required")
             requested_rights = fields.get("rights_status", "pending_review")
             if requested_rights not in {"pending_review", "owned_distribution", "licensed_distribution"}:
+                close_multipart_files(files)
                 raise ValueError("Unsupported import rights status")
             filename, data, mime_type = files["file"]
-            if len(data) > MAX_UPLOAD_BYTES:
-                raise ValueError("Video exceeds upload limit")
             asset_id = new_id("asset")
             destination = self.app.settings.originals_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
             created_asset_id = ""
             try:
-                destination.write_bytes(data)
+                with destination.open("wb") as output:
+                    shutil.copyfileobj(data, output, FILE_STREAM_CHUNK_SIZE)
                 metadata = validate_video(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(
@@ -578,24 +740,26 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.db.delete("assets", "id", created_asset_id)
                 destination.unlink(missing_ok=True)
                 raise
+            finally:
+                close_multipart_files(files)
             self.send_json({"asset": asset}, HTTPStatus.CREATED)
             return
         if path == "/api/assets/audio-upload":
-            content_type = self.headers.get("Content-Type", "")
-            fields, files = parse_multipart(content_type, self.read_body())
+            fields, files = self.read_multipart()
             if "file" not in files:
+                close_multipart_files(files)
                 raise ValueError("An audio file is required")
             requested_rights = fields.get("rights_status", "pending_review")
             if requested_rights not in {"pending_review", "owned_distribution", "licensed_distribution"}:
+                close_multipart_files(files)
                 raise ValueError("Unsupported import rights status")
             filename, data, mime_type = files["file"]
-            if len(data) > MAX_UPLOAD_BYTES:
-                raise ValueError("Audio exceeds upload limit")
             asset_id = new_id("asset")
             destination = self.app.settings.audio_dir / f"{asset_id}{safe_extension(filename, mime_type)}"
             created_asset_id = ""
             try:
-                destination.write_bytes(data)
+                with destination.open("wb") as output:
+                    shutil.copyfileobj(data, output, FILE_STREAM_CHUNK_SIZE)
                 metadata = validate_audio(destination)
                 metadata["fingerprint"] = sha256_file(destination)
                 asset = create_asset(
@@ -619,6 +783,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.app.db.delete("assets", "id", created_asset_id)
                 destination.unlink(missing_ok=True)
                 raise
+            finally:
+                close_multipart_files(files)
             self.send_json({"asset": asset}, HTTPStatus.CREATED)
             return
         if path == "/api/projects":
