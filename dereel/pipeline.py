@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import add_text_overlay, concat_segments, mix_audio_tracks, normalize_segment, sha256_file, validate_audio, validate_video, write_caption_track
+from .media import add_text_overlay, concat_segments, mix_audio_tracks, normalize_segment, normalize_text_style, sha256_file, validate_audio, validate_video, write_caption_track
 
 
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
@@ -916,7 +916,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         "project_id": project_id,
         "created_at": now_iso(),
         "format": project["format"],
-        "style": project["style"],
+        "style": normalize_text_style(project["style"]),
         "inputs": [],
         "outputs": {},
     }
@@ -973,7 +973,8 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         add_title_card = _as_bool(settings.get("add_title_card"), True)
         write_captions = _as_bool(settings.get("write_captions"), True)
         titled = output_dir / "final.mp4"
-        overlay_applied = add_text_overlay(base, titled, project["title"] or project["name"], project["caption"]) if add_title_card else False
+        render_style = normalize_text_style(project["style"])
+        overlay_applied = add_text_overlay(base, titled, project["title"] or project["name"], project["caption"], render_style) if add_title_card else False
         if not add_title_card:
             shutil.copy2(base, titled)
         base.unlink(missing_ok=True)
@@ -988,7 +989,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         if manifest["validation"]["status"] != "passed":
             raise ValueError("Rendered outputs failed validation: " + "; ".join(manifest["validation"]["problems"]))
         manifest["overlay_applied"] = overlay_applied
-        manifest["title_treatment"] = {"requested": add_title_card, "applied": overlay_applied, "mode": treatment_mode}
+        manifest["title_treatment"] = {"requested": add_title_card, "applied": overlay_applied, "mode": treatment_mode, "style": render_style}
         caption_path = output_dir / "captions.srt"
         caption_written = write_caption_track(caption_path, project["caption"], sum(item["duration"] for item in manifest["inputs"])) if write_captions else False
         if not write_captions:

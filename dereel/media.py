@@ -13,6 +13,18 @@ from typing import Any
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".webm", ".mkv", ".avi"}
 AUDIO_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".flac"}
 MEDIA_EXTENSIONS = VIDEO_EXTENSIONS | AUDIO_EXTENSIONS
+TEXT_STYLES = {"kinetic", "clean", "narrated"}
+
+TEXT_STYLE_PRESETS = {
+    "kinetic": {"title_size": 64, "title_spacing": 8, "title_border": 22, "title_alpha": "0.56", "title_x": "(w-text_w)/2", "title_y": "120", "subtitle_size": 40, "subtitle_spacing": 6, "subtitle_border": 16, "subtitle_alpha": "0.52", "subtitle_x": "(w-text_w)/2", "subtitle_y": "h-300"},
+    "clean": {"title_size": 50, "title_spacing": 4, "title_border": 12, "title_alpha": "0.42", "title_x": "80", "title_y": "140", "subtitle_size": 34, "subtitle_spacing": 4, "subtitle_border": 10, "subtitle_alpha": "0.36", "subtitle_x": "80", "subtitle_y": "h-240"},
+    "narrated": {"title_size": 44, "title_spacing": 4, "title_border": 14, "title_alpha": "0.48", "title_x": "(w-text_w)/2", "title_y": "100", "subtitle_size": 48, "subtitle_spacing": 8, "subtitle_border": 18, "subtitle_alpha": "0.58", "subtitle_x": "(w-text_w)/2", "subtitle_y": "h-260"},
+}
+
+
+def normalize_text_style(style: str | None) -> str:
+    value = str(style or "kinetic").strip().lower()
+    return value if value in TEXT_STYLES else "kinetic"
 
 
 def safe_extension(filename: str, mime_type: str | None = None) -> str:
@@ -189,7 +201,7 @@ def concat_segments(segments: list[Path], destination: Path) -> None:
         concat_file.unlink(missing_ok=True)
 
 
-def add_text_overlay(source: Path, destination: Path, title: str, subtitle: str = "") -> bool:
+def add_text_overlay(source: Path, destination: Path, title: str, subtitle: str = "", style: str = "kinetic") -> bool:
     if "drawtext" not in available_filters():
         # Some system FFmpeg builds omit libfreetype/drawtext. The edit is still valid;
         # callers receive a false result and can record that title treatment was skipped.
@@ -201,13 +213,14 @@ def add_text_overlay(source: Path, destination: Path, title: str, subtitle: str 
     subtitle_file = destination.with_suffix(".subtitle.txt")
     title_file.write_text(title.strip()[:80])
     subtitle_file.write_text(subtitle.strip()[:140])
+    preset = TEXT_STYLE_PRESETS[normalize_text_style(style)]
     # drawtext uses text files to avoid shell escaping user-provided copy.
     filters = [
-        f"drawtext=textfile='{quote_concat_path(title_file)}':fontcolor=white:fontsize=64:line_spacing=8:box=1:boxcolor=black@0.56:boxborderw=22:x=(w-text_w)/2:y=120",
+        f"drawtext=textfile='{quote_concat_path(title_file)}':fontcolor=white:fontsize={preset['title_size']}:line_spacing={preset['title_spacing']}:box=1:boxcolor=black@{preset['title_alpha']}:boxborderw={preset['title_border']}:x={preset['title_x']}:y={preset['title_y']}",
     ]
     if subtitle.strip():
         filters.append(
-            f"drawtext=textfile='{quote_concat_path(subtitle_file)}':fontcolor=white:fontsize=40:line_spacing=6:box=1:boxcolor=black@0.52:boxborderw=16:x=(w-text_w)/2:y=h-300"
+            f"drawtext=textfile='{quote_concat_path(subtitle_file)}':fontcolor=white:fontsize={preset['subtitle_size']}:line_spacing={preset['subtitle_spacing']}:box=1:boxcolor=black@{preset['subtitle_alpha']}:boxborderw={preset['subtitle_border']}:x={preset['subtitle_x']}:y={preset['subtitle_y']}"
         )
     command = [
         "ffmpeg",

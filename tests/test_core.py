@@ -12,7 +12,7 @@ from unittest.mock import patch
 from urllib.parse import parse_qs
 
 from dereel.db import Database
-from dereel.media import sha256_file, validate_audio, validate_video
+from dereel.media import add_text_overlay, sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
@@ -911,6 +911,20 @@ class CoreModelTests(unittest.TestCase):
         self.assertIn("media", diagnostics)
         self.assertIn("ffmpeg", diagnostics["media"])
         self.assertEqual({provider["id"] for provider in diagnostics["providers"]}, {"pexels", "pixabay"})
+
+    def test_text_style_preset_changes_drawtext_filter(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.mp4"
+            destination = root / "clean.mp4"
+            source.write_bytes(b"source")
+            with patch("dereel.media.available_filters", return_value={"drawtext"}), patch("dereel.media.subprocess.run", return_value=type("Result", (), {"returncode": 0, "stderr": ""})()) as runner:
+                self.assertTrue(add_text_overlay(source, destination, "Title", "Subtitle", "clean"))
+            command = runner.call_args.args[0]
+            filter_graph = command[command.index("-vf") + 1]
+            self.assertIn("fontsize=50", filter_graph)
+            self.assertIn(":x=80:y=140", filter_graph)
+            self.assertIn("fontsize=34", filter_graph)
 
     def test_platform_export_bounds_match_current_reel_limits(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
