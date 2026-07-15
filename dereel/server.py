@@ -61,7 +61,7 @@ from .pipeline import (
     validate_project_output,
 )
 from .publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, publish_result_status, reschedule_publish_job, update_publishing_account
-from .scout import configured_providers, import_provider_asset, search as search_provider
+from .scout import configured_providers, import_provider_asset, import_provider_assets, search as search_provider
 
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
@@ -741,6 +741,11 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/scout/import":
             asset = import_provider_asset(self.app.db, self.app.settings.originals_dir, self.read_json())
             self.send_json({"asset": asset}, HTTPStatus.CREATED)
+            return
+        if path == "/api/scout/import/bulk":
+            payload = self.read_json()
+            result = import_provider_assets(self.app.db, self.app.settings.originals_dir, payload.get("items"))
+            self.send_json(result)
             return
         if path == "/api/assets/upload":
             fields, files = self.read_multipart()

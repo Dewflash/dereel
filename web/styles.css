@@ -132,7 +132,10 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .provider-panel { margin-bottom: 18px; }
 .provider-search { display: grid; grid-template-columns: minmax(0, 1fr) 150px auto; gap: 8px; }
 .provider-results { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; margin-top: 15px; }
+.provider-batch-actions { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 7px; border-bottom: 1px solid var(--line); padding-bottom: 10px; }
 .provider-result { min-width: 0; border: 1px solid var(--line); border-radius: 5px; background: #111715; padding: 12px; }
+.provider-select { display: flex; align-items: center; gap: 6px; margin: 0 0 9px; color: var(--dim); font-size: 9px; font-weight: 800; text-transform: uppercase; }
+.provider-select input { width: auto; accent-color: var(--accent); }
 .provider-result strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .provider-result small { display: block; min-height: 30px; color: var(--muted); font-size: 10px; line-height: 1.45; margin-top: 7px; }
 .provider-result .asset-actions { margin-top: 12px; }

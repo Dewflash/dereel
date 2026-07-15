@@ -189,3 +189,28 @@ def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str
         if destination:
             destination.unlink(missing_ok=True)
         raise
+
+
+def import_provider_assets(db: Database, destination_dir: Path, payloads: list[dict[str, Any]]) -> dict[str, Any]:
+    if not isinstance(payloads, list):
+        raise ValueError("Provider import items must be an array")
+    if not payloads:
+        raise ValueError("Select at least one provider result")
+    if len(payloads) > 24:
+        raise ValueError("You can import at most 24 provider results at once")
+    imported: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            errors.append({"provider": "", "provider_id": "", "title": "", "error": "Provider result must be an object"})
+            continue
+        try:
+            imported.append(import_provider_asset(db, destination_dir, payload))
+        except Exception as error:
+            errors.append({
+                "provider": str(payload.get("provider") or ""),
+                "provider_id": str(payload.get("provider_id") or ""),
+                "title": str(payload.get("title") or "Provider result"),
+                "error": str(error)[:300],
+            })
+    return {"imported": imported, "errors": errors}

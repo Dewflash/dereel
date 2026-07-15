@@ -14,7 +14,7 @@ from urllib.parse import parse_qs
 from dereel.db import Database
 from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, bulk_review_content_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_assets, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
-from dereel.scout import _host_allowed, import_provider_asset
+from dereel.scout import _host_allowed, import_provider_asset, import_provider_assets
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
@@ -692,6 +692,21 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(len(result["imported"]), 1)
             self.assertEqual(result["imported"][0]["rights_status"], "pending_review")
             self.assertEqual(importer.call_args.kwargs["automation_id"], automation["id"])
+
+    def test_bulk_provider_import_preserves_successes_and_reports_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            items = [
+                {"provider": "pexels", "provider_id": "one", "download_url": "https://videos.pexels.com/one.mp4", "title": "One"},
+                {"provider": "pexels", "provider_id": "two", "download_url": "https://videos.pexels.com/two.mp4", "title": "Two"},
+            ]
+            with patch("dereel.scout.import_provider_asset", side_effect=[{"id": "asset_one", "rights_status": "pending_review"}, ValueError("duplicate provider result")]) as importer:
+                result = import_provider_assets(db, Path(directory) / "library", items)
+            self.assertEqual([asset["id"] for asset in result["imported"]], ["asset_one"])
+            self.assertEqual((result["errors"][0]["provider_id"], result["errors"][0]["error"]), ("two", "duplicate provider result"))
+            self.assertEqual(importer.call_count, 2)
+            with self.assertRaisesRegex(ValueError, "at most 24"):
+                import_provider_assets(db, Path(directory) / "library", items * 13)
 
     def test_owned_provider_automation_records_attestation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

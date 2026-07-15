@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, automationDraft: { accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], selectedProviderIds: new Set(), assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, automationDraft: { accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
 let refreshInFlight = null;
 let refreshQueued = false;
 
@@ -180,9 +180,19 @@ function renderReviewToolbar() {
   $$('[data-bulk-content-action]').forEach((button) => { button.disabled = contentCount === 0 || mixed; });
 }
 
-function renderProviderResults(results = []) {
-  state.providerResults = results;
-  $("#provider-results").innerHTML = results.length ? results.map((item) => `<article class="provider-result"><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong><small>${escapeHtml(item.provider)} · ${formatDuration(item.duration)} · ${item.width || "?"}x${item.height || "?"}</small><div class="asset-actions"><button class="mini-button" data-provider-save="${escapeHtml(item.provider_id)}">Save reference</button><button class="mini-button" data-provider-import="${escapeHtml(item.provider_id)}">Import for review</button></div></article>`).join("") : "";
+function renderProviderResults(results = null) {
+  if (Array.isArray(results)) state.providerResults = results;
+  results = state.providerResults;
+  const visibleKeys = new Set(results.map((item) => `${item.provider}:${item.provider_id}`));
+  state.selectedProviderIds = new Set([...state.selectedProviderIds].filter((key) => visibleKeys.has(key)));
+  if (!results.length) { $("#provider-results").innerHTML = ""; return; }
+  const selectedCount = state.selectedProviderIds.size;
+  const controls = `<div class="provider-batch-actions"><span class="count-label">${selectedCount} selected</span><button class="mini-button" data-action="select-provider-results">Select all</button><button class="mini-button" data-action="clear-provider-results">Clear</button><button class="mini-button" data-action="provider-import-selected" ${selectedCount ? "" : "disabled"}>Import selected</button></div>`;
+  const cards = results.map((item) => {
+    const key = `${item.provider}:${item.provider_id}`;
+    return `<article class="provider-result"><label class="provider-select"><input type="checkbox" data-provider-select="${escapeHtml(key)}" ${state.selectedProviderIds.has(key) ? "checked" : ""} /><span>Select</span></label><strong title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</strong><small>${escapeHtml(item.provider)} · ${formatDuration(item.duration)} · ${item.width || "?"}x${item.height || "?"}</small><div class="asset-actions"><button class="mini-button" data-provider-save="${escapeHtml(item.provider_id)}">Save reference</button><button class="mini-button" data-provider-import="${escapeHtml(item.provider_id)}">Import for review</button></div></article>`;
+  }).join("");
+  $("#provider-results").innerHTML = controls + cards;
 }
 
 function isContentReviewableAsset(asset) {
@@ -652,6 +662,18 @@ async function handleClick(event) {
     if (action === "select-visible") { const selectable = state.assetFilter === "content_review" ? isContentReviewableAsset : isReviewableAsset; libraryAssets().filter(selectable).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
     if (action === "clear-selection") { state.selectedAssets.clear(); renderAssets(); return; }
     if (action === "clear-automation-runs") { state.selectedAutomationId = ""; state.automationRuns = []; renderAutomationRuns(); return; }
+    if (action === "select-provider-results") { state.selectedProviderIds = new Set(state.providerResults.map((item) => `${item.provider}:${item.provider_id}`)); renderProviderResults(); return; }
+    if (action === "clear-provider-results") { state.selectedProviderIds.clear(); renderProviderResults(); return; }
+    if (action === "provider-import-selected") {
+      const items = state.providerResults.filter((item) => state.selectedProviderIds.has(`${item.provider}:${item.provider_id}`));
+      const result = await api("/api/scout/import/bulk", { method: "POST", body: JSON.stringify({ items }) });
+      state.selectedProviderIds.clear();
+      renderProviderResults();
+      const failureCount = (result.errors || []).length;
+      toast(`${(result.imported || []).length} provider asset${result.imported?.length === 1 ? "" : "s"} imported${failureCount ? ` · ${failureCount} failed` : ""}`, failureCount > 0);
+      await refresh();
+      return;
+    }
     if (action === "close-asset-inspector") { state.inspectedAssetId = ""; renderAssets(); return; }
     if (bulkAction) { await submitBulkReview(bulkAction); return; }
     if (bulkContentAction) { await submitBulkContentReview(bulkContentAction); return; }
@@ -684,7 +706,7 @@ async function handleClick(event) {
     if (removeClip) { const card = target.closest(".timeline-clip"); const clipProject = projectId || card?.dataset.projectId; await api(`/api/projects/${clipProject}/assets/${removeClip}`, { method: "DELETE" }); toast("Clip removed from the edit"); await refresh(); return; }
     if (saveClip || toggleClip) { const card = target.closest(".timeline-clip"); const clipProject = projectId || card?.dataset.projectId; const clipId = saveClip || toggleClip; const body = toggleClip ? { enabled: Number(enabled) } : { in_point: Number($(".clip-in", card).value), out_point: Number($(".clip-out", card).value) }; await api(`/api/projects/${clipProject}/assets/${clipId}`, { method: "POST", body: JSON.stringify(body) }); toast(toggleClip ? "Clip state updated" : "Trim points saved"); await refresh(); return; }
     if (moveClip) { const card = target.closest(".timeline-clip"); const clipProject = projectId || card?.dataset.projectId; await api(`/api/projects/${clipProject}/assets/${moveClip}/move`, { method: "POST", body: JSON.stringify({ direction }) }); toast("Clip order updated"); await refresh(); return; }
-    if (providerSave || providerImport) { const item = state.providerResults.find((result) => result.provider_id === (providerSave || providerImport)); if (!item) { toast("Provider result expired", true); return; } if (providerSave) { await api("/api/assets/reference", { method: "POST", body: JSON.stringify({ title: item.title, source_url: item.source_url, platform: item.provider, tags: [item.provider] }) }); toast("Reference saved to Scout"); } else { await api("/api/scout/import", { method: "POST", body: JSON.stringify({ provider: item.provider, provider_id: item.provider_id, download_url: item.download_url, source_url: item.source_url, title: item.title, tags: [item.provider] }) }); toast("Provider asset imported for review"); } await refresh(); return; }
+    if (providerSave || providerImport) { const item = state.providerResults.find((result) => result.provider_id === (providerSave || providerImport)); if (!item) { toast("Provider result expired", true); return; } if (providerSave) { await api("/api/assets/reference", { method: "POST", body: JSON.stringify({ title: item.title, source_url: item.source_url, platform: item.provider, tags: [item.provider] }) }); toast("Reference saved to Scout"); } else { await api("/api/scout/import", { method: "POST", body: JSON.stringify({ provider: item.provider, provider_id: item.provider_id, download_url: item.download_url, source_url: item.source_url, title: item.title, tags: [item.provider] }) }); toast("Provider asset imported for review"); } state.selectedProviderIds.delete(`${item.provider}:${item.provider_id}`); renderProviderResults(); await refresh(); return; }
     if (target.dataset.copyPath) { await navigator.clipboard?.writeText(target.dataset.copyPath); toast("Package path copied"); return; }
     if (planProject) { await api(`/api/projects/${planProject}/plan`, { method: "POST", body: "{}" }); toast("Edit plan updated"); await refresh(); return; }
     if (renderProject) { const result = await api(`/api/projects/${renderProject}/render`, { method: "POST", body: "{}" }); toast(`Render queued: ${result.job.id}`); await refresh(); return; }
@@ -818,8 +840,17 @@ function handleAssetSelection(event) {
   renderReviewToolbar();
 }
 
+function handleProviderSelection(event) {
+  const input = event.target.closest("input[data-provider-select]");
+  if (!input) return;
+  if (input.checked) state.selectedProviderIds.add(input.dataset.providerSelect);
+  else state.selectedProviderIds.delete(input.dataset.providerSelect);
+  renderProviderResults();
+}
+
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleAssetSelection);
+document.addEventListener("change", handleProviderSelection);
 document.addEventListener("submit", (event) => { if (event.target.id === "asset-inspector-form") { event.preventDefault(); submitAssetCuration(event.target); } });
 document.addEventListener("submit", (event) => { if (event.target.id === "project-settings-form") { event.preventDefault(); submitProjectSettings(event.target); } });
 $("#asset-search").addEventListener("input", (event) => { state.assetQuery = event.target.value; renderAssets(); });
