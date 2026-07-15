@@ -353,6 +353,15 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
     return {"found": len(files), "imported": imported, "duplicates": duplicates, "errors": errors}
 
 
+def _cleanup_provider_asset(db: Database, asset: dict[str, Any]) -> None:
+    current = db.get("assets", "id", asset.get("id", ""))
+    if not current or current.get("rights_status") != "pending_review":
+        return
+    db.delete("assets", "id", asset["id"])
+    if current.get("local_path"):
+        Path(current["local_path"]).unlink(missing_ok=True)
+
+
 def scan_provider_sources(db: Database, automation: dict[str, Any], originals_dir: Path) -> dict[str, Any]:
     results = search_provider(automation["provider"], automation["search_query"], per_page=automation["provider_limit"])
     imported: list[dict[str, Any]] = []
@@ -380,18 +389,14 @@ def scan_provider_sources(db: Database, automation: dict[str, Any], originals_di
             imported.append(asset)
         except ValueError as error:
             if asset:
-                db.delete("assets", "id", asset["id"])
-                if asset.get("local_path"):
-                    Path(asset["local_path"]).unlink(missing_ok=True)
+                _cleanup_provider_asset(db, asset)
             if "matches existing asset" in str(error):
                 duplicates.append(str(result.get("title") or result.get("provider_id") or "provider result"))
             else:
                 errors.append({"file": str(result.get("title") or "provider result"), "error": str(error)[:300]})
         except Exception as error:
             if asset:
-                db.delete("assets", "id", asset["id"])
-                if asset.get("local_path"):
-                    Path(asset["local_path"]).unlink(missing_ok=True)
+                _cleanup_provider_asset(db, asset)
             errors.append({"file": str(result.get("title") or "provider result"), "error": str(error)[:300]})
     return {"found": len(results), "imported": imported, "duplicates": duplicates, "errors": errors}
 

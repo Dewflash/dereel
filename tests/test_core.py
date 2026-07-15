@@ -425,6 +425,26 @@ class CoreModelTests(unittest.TestCase):
             self.assertIsNone(db.get("assets", "id", imported["id"]))
             self.assertFalse(provider_path.exists())
 
+    def test_provider_cleanup_preserves_a_concurrent_approval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Provider race", "source_mode": "provider", "provider": "pexels", "search_query": "funny cats", "default_rights": "licensed_distribution"})
+            provider_path = root / "provider.mp4"
+            provider_path.write_bytes(b"provider")
+            imported = create_asset(db, kind="media", title="Provider clip", source_url="https://pexels.com/video/1", platform="pexels", local_path=str(provider_path), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280})
+
+            def approve_then_fail(*_args: object, **_kwargs: object) -> dict[str, Any]:
+                review_asset(db, imported["id"], "approve_licensed", "Concurrent approval")
+                raise RuntimeError("response serialization failed")
+
+            with patch("dereel.automation.search_provider", return_value=[{"provider": "pexels", "provider_id": "1", "download_url": "https://videos.pexels.com/clip.mp4", "source_url": "https://pexels.com/video/1", "title": "Provider clip"}]), patch("dereel.automation.import_provider_asset", return_value=imported), patch("dereel.automation.review_asset", side_effect=approve_then_fail):
+                result = scan_provider_sources(db, automation, root / "library")
+            self.assertEqual(len(result["errors"]), 1)
+            preserved = db.get("assets", "id", imported["id"])
+            self.assertEqual((preserved["rights_status"], preserved["status"]), ("licensed_distribution", "approved"))
+            self.assertTrue(provider_path.exists())
+
     def test_project_defaults_to_vertical_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")
