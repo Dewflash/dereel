@@ -483,14 +483,80 @@ def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None 
     return project_view(db, db.get("projects", "id", project_id) or {})
 
 
-def create_job(db: Database, project_id: str | None, kind: str, automation_id: str | None = None) -> dict[str, Any]:
+def create_job(
+    db: Database,
+    project_id: str | None,
+    kind: str,
+    automation_id: str | None = None,
+    retry_of: str | None = None,
+    attempt: int = 1,
+) -> dict[str, Any]:
     job_id = new_id("job")
     now = now_iso()
     db.insert(
         "jobs",
-        {"id": job_id, "project_id": project_id, "automation_id": automation_id, "kind": kind, "status": "queued", "progress": 0, "message": "Queued", "error": "", "result_json": "{}", "created_at": now, "updated_at": now},
+        {"id": job_id, "project_id": project_id, "automation_id": automation_id, "retry_of": retry_of, "attempt": max(1, int(attempt)), "kind": kind, "status": "queued", "progress": 0, "message": "Queued", "error": "", "result_json": "{}", "created_at": now, "updated_at": now},
     )
     return db.get("jobs", "id", job_id) or {}
+
+
+def retry_failed_job(db: Database, job_id: str) -> dict[str, Any]:
+    with db.connection() as connection:
+        failed = connection.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if not failed:
+            raise KeyError("Job not found")
+        if failed["status"] != "failed":
+            raise ValueError("Only failed jobs can be retried")
+        if failed["kind"] not in {"render", "automation"}:
+            raise ValueError(f"Job kind '{failed['kind']}' cannot be retried")
+
+        if failed["kind"] == "render":
+            subject_column = "project_id"
+            subject_id = failed["project_id"]
+            if not subject_id:
+                raise ValueError("Render job has no project to retry")
+            project = connection.execute("SELECT status FROM projects WHERE id = ?", (subject_id,)).fetchone()
+            if not project:
+                raise ValueError("Render project no longer exists")
+            if project["status"] == "ready":
+                raise ValueError("Project is already ready; render does not need a retry")
+        else:
+            subject_column = "automation_id"
+            subject_id = failed["automation_id"]
+            if not subject_id:
+                raise ValueError("Automation job has no recipe to retry")
+            automation = connection.execute("SELECT status FROM automations WHERE id = ?", (subject_id,)).fetchone()
+            if not automation:
+                raise ValueError("Automation recipe no longer exists")
+            if automation["status"] in {"queued", "running"}:
+                raise ValueError("Automation is already queued or running")
+
+        latest = connection.execute(
+            f"SELECT id FROM jobs WHERE kind = ? AND {subject_column} = ? ORDER BY attempt DESC, created_at DESC LIMIT 1",
+            (failed["kind"], subject_id),
+        ).fetchone()
+        if not latest or latest["id"] != failed["id"]:
+            raise ValueError("Only the latest failed attempt can be retried")
+        active = connection.execute(
+            f"SELECT id FROM jobs WHERE kind = ? AND {subject_column} = ? AND status IN ('queued', 'running') LIMIT 1",
+            (failed["kind"], subject_id),
+        ).fetchone()
+        if active:
+            raise ValueError("A job for this target is already queued or running")
+
+        if failed["kind"] == "automation":
+            connection.execute(
+                "UPDATE automations SET status = 'queued', last_error = '', updated_at = ? WHERE id = ?",
+                (now_iso(), subject_id),
+            )
+        retry_id = new_id("job")
+        now = now_iso()
+        connection.execute(
+            "INSERT INTO jobs(id, project_id, automation_id, retry_of, attempt, kind, status, progress, message, error, result_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', 0, 'Queued', '', '{}', ?, ?)",
+            (retry_id, failed["project_id"], failed["automation_id"], failed["id"], max(1, int(failed["attempt"] or 1)) + 1, failed["kind"], now, now),
+        )
+        created = connection.execute("SELECT * FROM jobs WHERE id = ?", (retry_id,)).fetchone()
+    return dict(created) if created else {}
 
 
 def set_job(db: Database, job_id: str, **values: Any) -> None:

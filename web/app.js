@@ -79,7 +79,9 @@ function renderDashboard(data, diagnostics = {}) {
   const jobs = data.jobs || [];
   $("#job-list").innerHTML = jobs.length ? jobs.map((job) => {
     const target = job.project_id || job.automation_id || "Workspace job";
-    return `<div class="job-row"><div class="row-icon">${job.kind === "render" ? "▶" : "•"}</div><div class="row-main"><strong>${escapeHtml(job.message || job.kind)}</strong><small>${escapeHtml(target)}</small></div>${statusPill(job.status)}</div>`;
+    const attempt = Number(job.attempt || 1) > 1 ? ` · attempt ${Number(job.attempt)}` : "";
+    const retry = job.status === "failed" && ["render", "automation"].includes(job.kind) ? `<button class="row-action" data-retry-job="${escapeHtml(job.id)}" title="Retry this failed attempt">↻ Retry</button>` : "";
+    return `<div class="job-row"><div class="row-icon">${job.kind === "render" ? "▶" : "•"}</div><div class="row-main"><strong>${escapeHtml(job.message || job.kind)}</strong><small>${escapeHtml(target)}${attempt}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${statusPill(job.status)}${retry}</div>`;
   }).join("") : empty("No jobs yet", "Render and analysis jobs will appear here.");
   renderDiagnostics(diagnostics);
   $("#health-label").textContent = "ready";
@@ -385,7 +387,7 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, retryJob, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -401,6 +403,7 @@ async function handleClick(event) {
     if (approveOwned) { await api(`/api/assets/${approveOwned}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Ownership attested"); await refresh(); return; }
     if (editAutomationId) { editAutomation(editAutomationId); return; }
     if (runAutomation) { await api(`/api/automations/${runAutomation}/run`, { method: "POST", body: "{}" }); toast("Automation queued"); await refresh(); return; }
+    if (retryJob) { await api(`/api/jobs/${retryJob}/retry`, { method: "POST", body: "{}" }); toast("Job retry queued"); await refresh(); return; }
     if (toggleAutomation) { const automation = state.automations.find((item) => item.id === toggleAutomation); if (automation) { await api(`/api/automations/${toggleAutomation}`, { method: "PATCH", body: JSON.stringify({ enabled: !automation.enabled }) }); toast(automation.enabled ? "Automation paused" : "Automation enabled"); await refresh(); } return; }
     if (deleteAutomation) { if (!window.confirm("Delete this automation recipe? Imported assets will stay in the library.")) return; await api(`/api/automations/${deleteAutomation}`, { method: "DELETE" }); toast("Automation deleted"); await refresh(); return; }
     if (rejectAsset) { await api(`/api/assets/${rejectAsset}`, { method: "PATCH", body: JSON.stringify({ status: "rejected", rights_status: "blocked" }) }); toast("Asset rejected"); await refresh(); return; }

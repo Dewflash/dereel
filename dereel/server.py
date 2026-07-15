@@ -37,6 +37,7 @@ from .pipeline import (
     get_project_assets,
     list_assets,
     plan_project,
+    retry_failed_job,
     project_view,
     render_project,
     set_job,
@@ -154,6 +155,26 @@ class AppState:
             self.db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
             set_job(self.db, job_id, status="failed", message="Render failed", error=str(error))
 
+    def submit_render(self, job: dict[str, Any], project_id: str) -> dict[str, Any]:
+        try:
+            JOB_POOL.submit(self.execute_render, job["id"], project_id)
+        except Exception as error:
+            self.db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
+            set_job(self.db, job["id"], status="failed", message="Render could not start", error=str(error))
+        return self.db.get("jobs", "id", job["id"]) or job
+
+    def queue_render(self, project_id: str) -> dict[str, Any]:
+        if not self.db.get("projects", "id", project_id):
+            raise KeyError("Project not found")
+        with self.db.connection() as connection:
+            active = connection.execute(
+                "SELECT id FROM jobs WHERE kind = 'render' AND project_id = ? AND status IN ('queued', 'running') LIMIT 1",
+                (project_id,),
+            ).fetchone()
+        if active:
+            raise ValueError("A render for this project is already queued or running")
+        return self.submit_render(create_job(self.db, project_id, "render"), project_id)
+
     def execute_automation(self, job_id: str, automation_id: str) -> None:
         try:
             set_automation_running(self.db, automation_id)
@@ -184,6 +205,12 @@ class AppState:
             finish_automation(self.db, automation_id, error=str(error))
             set_job(self.db, job["id"], status="failed", message="Automation could not start", error=str(error))
         return self.db.get("jobs", "id", job["id"]) or job
+
+    def retry_job(self, job_id: str) -> dict[str, Any]:
+        job = retry_failed_job(self.db, job_id)
+        if job["kind"] == "render":
+            return self.submit_render(job, job["project_id"])
+        return self.submit_automation(job, job["automation_id"])
 
     def queue_automation(self, automation_id: str) -> dict[str, Any]:
         if not self.db.get("automations", "id", automation_id):
@@ -528,11 +555,11 @@ class Handler(BaseHTTPRequestHandler):
         match = re.fullmatch(r"/api/projects/([^/]+)/render", path)
         if match:
             project_id = match.group(1)
-            if not self.app.db.get("projects", "id", project_id):
-                raise KeyError("Project not found")
-            job = create_job(self.app.db, project_id, "render")
-            JOB_POOL.submit(self.app.execute_render, job["id"], project_id)
-            self.send_json({"job": job}, HTTPStatus.ACCEPTED)
+            self.send_json({"job": self.app.queue_render(project_id)}, HTTPStatus.ACCEPTED)
+            return
+        match = re.fullmatch(r"/api/jobs/([^/]+)/retry", path)
+        if match:
+            self.send_json({"job": self.app.retry_job(match.group(1))}, HTTPStatus.ACCEPTED)
             return
         match = re.fullmatch(r"/api/projects/([^/]+)/assets", path)
         if match:

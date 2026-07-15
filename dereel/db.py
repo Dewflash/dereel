@@ -169,6 +169,8 @@ class Database:
                     id TEXT PRIMARY KEY,
                     project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
                     automation_id TEXT REFERENCES automations(id) ON DELETE SET NULL,
+                    retry_of TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+                    attempt INTEGER NOT NULL DEFAULT 1,
                     kind TEXT NOT NULL,
                     status TEXT NOT NULL CHECK(status IN ('queued', 'running', 'completed', 'failed')),
                     progress REAL NOT NULL DEFAULT 0,
@@ -203,7 +205,7 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '4');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '5');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -230,8 +232,13 @@ class Database:
             job_columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
             if "automation_id" not in job_columns:
                 connection.execute("ALTER TABLE jobs ADD COLUMN automation_id TEXT")
+            if "retry_of" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN retry_of TEXT")
+            if "attempt" not in job_columns:
+                connection.execute("ALTER TABLE jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_automation ON jobs(automation_id)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '4')")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_retry_of ON jobs(retry_of)")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '5')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

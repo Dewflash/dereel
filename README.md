@@ -52,6 +52,8 @@ Create a recipe in the Automations view as a watch-folder, provider-search, or c
 
 An interval of `0` means manual runs only. A positive interval enables the local scheduler. Destination selection creates approval-ready outbox jobs after rendering; a publish delay schedules them for the local publisher worker. Automation jobs retain their recipe ID in the activity feed and database, so a run can be traced even before it creates a project. If the local process restarts during a render or automation run, DeReel marks the interrupted job and linked recipe failed with a retryable error instead of leaving a stale `running` record.
 
+Failed render and automation jobs can be retried from Overview. Retries are stored as new job attempts linked to the failed attempt; only the latest failed attempt is eligible, and a ready project or active duplicate is rejected.
+
 Overview's preflight panel reports whether FFmpeg, FFprobe, optional text overlay support, and the Pexels/Pixabay provider keys are available before you start a run.
 
 ## Important boundary

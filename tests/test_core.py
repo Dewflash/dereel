@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, retry_failed_job, score_asset, score_breakdown, set_job, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
@@ -38,7 +38,9 @@ class CoreModelTests(unittest.TestCase):
                 columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)").fetchall()}
                 schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
             self.assertIn("automation_id", columns)
-            self.assertEqual(schema_version, "4")
+            self.assertIn("retry_of", columns)
+            self.assertIn("attempt", columns)
+            self.assertEqual(schema_version, "5")
 
     def test_database_migrates_legacy_jobs_with_automation_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -71,8 +73,11 @@ class CoreModelTests(unittest.TestCase):
                 schema_version = migrated.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
                 index_names = {row[1] for row in migrated.execute("PRAGMA index_list(jobs)").fetchall()}
             self.assertIn("automation_id", columns)
+            self.assertIn("retry_of", columns)
+            self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
-            self.assertEqual(schema_version, "4")
+            self.assertIn("idx_jobs_retry_of", index_names)
+            self.assertEqual(schema_version, "5")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -226,6 +231,35 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual((stored_automation_job["status"], stored_automation_job["error"]), ("failed", "Interrupted by process restart"))
             stored_automation = db.get("automations", "id", automation["id"])
             self.assertEqual((stored_automation["status"], stored_automation["last_error"]), ("failed", "Interrupted by process restart"))
+
+    def test_failed_render_retry_creates_a_new_guarded_attempt(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Retry me", "theme": "recovery"})
+            failed = create_job(db, project["id"], "render")
+            set_job(db, failed["id"], status="failed", message="Render failed", error="temporary failure")
+            retry = retry_failed_job(db, failed["id"])
+            self.assertEqual((retry["retry_of"], retry["attempt"], retry["status"]), (failed["id"], 2, "queued"))
+            with self.assertRaisesRegex(ValueError, "latest failed attempt"):
+                retry_failed_job(db, failed["id"])
+            with self.assertRaisesRegex(ValueError, "Only failed jobs"):
+                retry_failed_job(db, retry["id"])
+
+    def test_render_queue_rejects_duplicate_active_work_and_persists_submit_failure(self) -> None:
+        class RejectingPool:
+            def submit(self, *_args, **_kwargs):
+                raise RuntimeError("render pool unavailable")
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(Settings(root=root, data_dir=root / "data", database_path=root / "data" / "test.sqlite3", originals_dir=root / "library", audio_dir=root / "audio", output_dir=root / "outputs", web_dir=root))
+            project = create_project(app.db, {"name": "Render queue", "theme": "test"})
+            with patch("dereel.server.JOB_POOL", RejectingPool()):
+                job = app.queue_render(project["id"])
+            self.assertEqual((job["status"], job["error"]), ("failed", "render pool unavailable"))
+            with patch("dereel.server.JOB_POOL", RejectingPool()):
+                retry = app.retry_job(job["id"])
+            self.assertEqual((retry["attempt"], retry["retry_of"], retry["status"]), (2, job["id"], "failed"))
 
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
