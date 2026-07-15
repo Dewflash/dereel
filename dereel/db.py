@@ -103,6 +103,18 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_asset_reviews_asset ON asset_reviews(asset_id, created_at DESC);
 
+                CREATE TABLE IF NOT EXISTS asset_content_reviews (
+                    id TEXT PRIMARY KEY,
+                    asset_id TEXT NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+                    verdict TEXT NOT NULL CHECK(verdict IN ('safe', 'flagged')),
+                    categories_json TEXT NOT NULL DEFAULT '[]',
+                    matches_json TEXT NOT NULL DEFAULT '[]',
+                    note TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_asset_content_reviews_asset ON asset_content_reviews(asset_id, created_at DESC);
+
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
@@ -255,7 +267,7 @@ class Database:
 
                 CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC);
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '11');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '12');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -263,6 +275,7 @@ class Database:
                 connection.execute("ALTER TABLE assets ADD COLUMN automation_id TEXT")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_assets_automation ON assets(automation_id)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_asset_reviews_asset ON asset_reviews(asset_id, created_at DESC)")
+            connection.execute("CREATE INDEX IF NOT EXISTS idx_asset_content_reviews_asset ON asset_content_reviews(asset_id, created_at DESC)")
             automation_columns = {row[1] for row in connection.execute("PRAGMA table_info(automations)").fetchall()}
             automation_migrations = {
                 "source_mode": "TEXT NOT NULL DEFAULT 'watch'",
@@ -360,7 +373,7 @@ class Database:
                     connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_claim ON publish_jobs(claim_token)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_publish_attempts_job ON publish_attempts(publish_job_id, started_at DESC)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '11')")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '12')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:

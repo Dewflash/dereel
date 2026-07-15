@@ -13,7 +13,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, asset_view, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, list_content_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, review_content_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed, import_provider_asset
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
@@ -140,6 +140,8 @@ class CoreModelTests(unittest.TestCase):
                 publish_schema = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publish_jobs'").fetchone()[0]
                 attempt_schema = connection.execute("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'publish_attempts'").fetchone()[0]
                 review_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_reviews)").fetchall()}
+                content_review_columns = {row[1] for row in connection.execute("PRAGMA table_info(asset_content_reviews)").fetchall()}
+                content_review_indexes = {row[1] for row in connection.execute("PRAGMA index_list(asset_content_reviews)").fetchall()}
                 schema_version = connection.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()[0]
             self.assertIn("automation_id", columns)
             self.assertIn("retry_of", columns)
@@ -148,7 +150,9 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("claimed_at", publish_columns)
             self.assertIn("'drafted'", publish_schema)
             self.assertIn("'drafted'", attempt_schema)
-            self.assertEqual(schema_version, "11")
+            self.assertEqual(schema_version, "12")
+            self.assertIn("matches_json", content_review_columns)
+            self.assertIn("idx_asset_content_reviews_asset", content_review_indexes)
             self.assertIn("attempt_number", attempt_columns)
             self.assertIn("cancelled_at", publish_columns)
             self.assertIn("previous_rights_status", review_columns)
@@ -248,7 +252,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertIn("attempt", columns)
             self.assertIn("idx_jobs_automation", index_names)
             self.assertIn("idx_jobs_retry_of", index_names)
-            self.assertEqual(schema_version, "11")
+            self.assertEqual(schema_version, "12")
 
     def test_media_fingerprints_prevent_duplicate_library_entries(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -448,6 +452,45 @@ class CoreModelTests(unittest.TestCase):
                 add_project_asset(db, project["id"], changed["id"], {})
             planned = plan_project(db, project["id"])
             self.assertEqual(planned["assets"], [])
+
+    def test_metadata_content_risk_needs_current_explicit_review(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            media_path = root / "clip.mp4"
+            media_path.write_bytes(b"clip")
+            flagged = create_asset(
+                db,
+                kind="media",
+                title="Knife stunt compilation",
+                local_path=str(media_path),
+                tags=["funny"],
+                rights_status="owned_distribution",
+                metadata={"duration": 4, "width": 720, "height": 1280},
+            )
+            self.assertEqual(flagged["content_risk"]["status"], "flagged")
+            self.assertEqual(flagged["content_risk"]["basis"], "metadata")
+            self.assertIn("content-risk-high", flagged["review_flags"])
+            self.assertEqual(create_asset(db, kind="media", title="Funny cats at home", local_path=str(root / "cats.mp4"), rights_status="owned_distribution", metadata={"duration": 2})["content_risk"]["status"], "clear")
+            project = create_project(db, {"name": "Risk gate", "theme": "funny"})
+            with self.assertRaisesRegex(ValueError, "content risk requires review"):
+                add_project_asset(db, project["id"], flagged["id"], {})
+            kept_flagged = review_content_asset(db, flagged["id"], "flagged", "Keep out of production")
+            self.assertEqual(kept_flagged["content_risk"]["status"], "flagged")
+            self.assertEqual(list_content_reviews(db, flagged["id"])[0]["verdict"], "flagged")
+            with self.assertRaisesRegex(ValueError, "content risk requires review"):
+                add_project_asset(db, project["id"], flagged["id"], {})
+            safe = review_content_asset(db, flagged["id"], "safe", "Reviewed manually for my private queue")
+            self.assertEqual(safe["content_risk"]["status"], "safe")
+            self.assertNotIn("content-risk-high", safe["review_flags"])
+            self.assertEqual(list_content_reviews(db, flagged["id"])[0]["note"], "Reviewed manually for my private queue")
+            add_project_asset(db, project["id"], flagged["id"], {})
+            db.update("assets", "id", flagged["id"], {"title": "Explosion stunt compilation", "updated_at": "2026-01-01T00:00:00+00:00"})
+            stale = asset_view(db.get("assets", "id", flagged["id"]) or {})
+            self.assertEqual(stale["content_risk"]["status"], "flagged")
+            with self.assertRaisesRegex(ValueError, "content risk requires review"):
+                add_project_asset(db, project["id"], flagged["id"], {})
+            self.assertEqual(review_content_asset(db, flagged["id"], "safe")["content_risk"]["status"], "safe")
 
     def test_automation_audio_controls_persist_and_feed_new_projects(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

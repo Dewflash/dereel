@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
 let refreshInFlight = null;
 let refreshQueued = false;
 
@@ -185,14 +185,21 @@ function assetCard(asset) {
   const tags = (asset.tags || []).slice(0, 4).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
   const canApprove = isReviewableAsset(asset);
   const healthBlocked = ["missing", "invalid", "changed"].includes(asset.health?.status);
-  const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status) && !healthBlocked;
+  const contentBlocked = asset.content_risk?.status === "flagged";
+  const canAdd = asset.kind === "media" && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status) && !healthBlocked && !contentBlocked;
   const providerImport = ["pexels", "pixabay"].includes(String(asset.platform || "").toLowerCase());
-  const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
+  const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : contentBlocked ? `<button class="mini-button" data-inspect-asset="${asset.id}">Review risk</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
   const sourceAction = /^https?:\/\//i.test(asset.source_url || "") ? `<a class="mini-button mini-link" href="${escapeHtml(asset.source_url)}" target="_blank" rel="noreferrer">Open source</a>` : "";
   const flags = (asset.review_flags || []).map((flag) => `<span class="risk-flag">${escapeHtml(flag.replaceAll("-", " "))}</span>`).join("");
   const health = asset.health || {};
   const healthPill = health.status && !["unchecked", "reference"].includes(health.status) ? statusPill(health.status) : "";
   return `<article class="asset-card"><div class="asset-preview">${selector}${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span><span>${statusPill(asset.rights_status)}${healthPill}</span></div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}${sourceAction}<button class="mini-button" data-inspect-asset="${asset.id}">Inspect</button><button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+}
+
+function assetContentRiskDetail(asset) {
+  const risk = asset.content_risk || { status: "clear", basis: "metadata", categories: [], matches: [] };
+  const detail = risk.matches?.length ? `${risk.categories.join(", ")} · ${risk.matches.join(", ")}` : "No metadata risk terms detected";
+  return `<div class="asset-detail"><span>Content scan</span><div>${statusPill(risk.status)}<small class="health-detail">${escapeHtml(detail)} · metadata only</small></div></div>`;
 }
 
 function assetReviewHistory(asset) {
@@ -215,6 +222,22 @@ function assetReviewControls(asset) {
   return `<div class="asset-review-controls"><div><span class="eyebrow">DECISION</span><strong>Record a curation decision</strong></div><label for="asset-review-note">Decision note<textarea id="asset-review-note" maxlength="300" rows="2" placeholder="Optional context for this decision"></textarea></label><div class="asset-review-actions">${approveButton}${rejectButton}</div></div>`;
 }
 
+function assetContentReviewControls(asset) {
+  if (asset.kind !== "media" || !asset.local_path || asset.content_risk?.status !== "flagged") return "";
+  const risk = asset.content_risk || {};
+  const categories = (risk.categories || []).join(", ") || "metadata terms";
+  return `<div class="asset-review-controls"><div><span class="eyebrow">CONTENT SAFETY</span><strong>Metadata risk requires a decision</strong><small class="form-note">Flagged categories: ${escapeHtml(categories)}. This scan uses descriptive records only; it does not inspect video frames.</small></div><label for="asset-content-review-note">Content note<textarea id="asset-content-review-note" maxlength="300" rows="2" placeholder="Why is this safe, or why should it stay blocked?"></textarea></label><div class="asset-review-actions"><button class="button secondary" type="button" data-content-review="${escapeHtml(asset.id)}" data-content-verdict="safe">Mark safe</button><button class="button danger" type="button" data-content-review="${escapeHtml(asset.id)}" data-content-verdict="flagged">Keep flagged</button></div></div>`;
+}
+
+function assetContentReviewHistory(asset) {
+  const reviews = state.contentReviews[asset.id];
+  const loaded = Array.isArray(reviews);
+  const toggle = `<button class="mini-button" type="button" data-content-review-history="${escapeHtml(asset.id)}">${loaded ? "Hide content history" : "Content history"}</button>`;
+  if (!loaded) return `<div class="asset-review-history-control">${toggle}</div>`;
+  const rows = reviews.length ? reviews.map((review) => `<div class="review-history-row"><div><strong>${statusPill(review.verdict)}</strong><small>${escapeHtml(review.created_at)}</small></div><div><span>${escapeHtml((review.categories || []).join(", ") || "No categories")}</span>${review.matches?.length ? `<small>${escapeHtml(review.matches.join(", "))}</small>` : ""}${review.note ? `<small>${escapeHtml(review.note)}</small>` : ""}</div></div>`).join("") : `<span class="count-label">No content decisions recorded</span>`;
+  return `<div class="asset-review-history"><div class="asset-review-history-header"><div><span class="eyebrow">DECISION LOG</span><strong>Content review history</strong></div>${toggle}</div>${rows}</div>`;
+}
+
 function renderAssetInspector() {
   const node = $("#asset-inspector");
   if (!node) return;
@@ -228,6 +251,8 @@ function renderAssetInspector() {
   const healthDetail = health.problems?.length ? health.problems.join("; ") : health.status === "passed" ? `Checked ${health.checked_at || ""}` : health.status === "unchecked" ? "Not checked yet" : "Reference record";
   node.hidden = false;
   node.innerHTML = `<div class="asset-inspector-header"><div><span class="eyebrow accent">SOURCE RECORD</span><h3>${escapeHtml(asset.title)}</h3><p>Inspect the origin, health, and curation metadata without changing the source file.</p></div><button class="text-button" type="button" data-action="close-asset-inspector">Close</button></div><div class="inspector-grid"><div class="asset-detail-list"><div class="asset-detail"><span>Origin</span><strong>${escapeHtml(provenance.source_type || "unknown")}</strong></div><div class="asset-detail"><span>Platform</span><strong>${escapeHtml(provenance.platform || "local")}</strong></div><div class="asset-detail"><span>Automation</span><strong>${escapeHtml(provenance.automation_id || "Manual import")}</strong></div><div class="asset-detail"><span>Fingerprint</span><code title="${escapeHtml(provenance.fingerprint || "")}">${escapeHtml(fingerprint)}</code></div><div class="asset-detail"><span>Local file</span><code>${escapeHtml(provenance.local_path || "Reference only")}</code></div><div class="asset-detail"><span>Source URL</span>${sourceUrl ? `<a class="inspector-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : `<strong>${escapeHtml(asset.source_url || "No source URL")}</strong>`}</div><div class="asset-detail"><span>Media health</span><div>${statusPill(health.status)}<small class="health-detail">${escapeHtml(healthDetail)}</small></div></div><div class="asset-flags"><span>Review flags</span><div>${flags}</div></div></div><form class="inspector-form" id="asset-inspector-form" data-asset-id="${escapeHtml(asset.id)}"><label>Title<input name="title" value="${escapeHtml(asset.title)}" maxlength="160" required /></label><label>Tags<input name="tags" value="${escapeHtml((asset.tags || []).join(", "))}" placeholder="cute, funny, reaction" /></label><label>Source URL<input name="source_url" type="url" value="${escapeHtml(asset.source_url || "")}" placeholder="https://..." /></label><button class="button secondary full" type="submit">Save curation</button><button class="button secondary full" type="button" data-health-asset="${escapeHtml(asset.id)}">Recheck media</button><p class="form-note">Rights decisions stay in the review queue. This form only edits descriptive metadata.</p></form></div></div>${assetReviewControls(asset)}${assetReviewHistory(asset)}`;
+  node.insertAdjacentHTML("beforeend", assetContentReviewControls(asset) + assetContentReviewHistory(asset));
+  $(".asset-detail-list", node)?.insertAdjacentHTML("beforeend", assetContentRiskDetail(asset));
 }
 
 function productionAudioAssets() {
@@ -519,7 +544,7 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, healthAsset, reviewHistory, reviewAsset, reviewAction, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, checkAccount, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, reviewAutomation, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, healthAsset, reviewHistory, contentReviewHistory, contentReview, contentVerdict, reviewAsset, reviewAction, validateOutput, addAsset, publishProject, markPublished, runPublish, publishHistory, checkAccount, editAccount, deleteAccount, editSchedule, cancelSchedule, saveSchedule, cancelPublish, reviewAutomation, providerSave, providerImport, saveClip, toggleClip, moveClip, removeClip, direction, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, deleteProject, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
@@ -534,6 +559,8 @@ async function handleClick(event) {
     if (action === "cancel-account-edit") { resetAccountForm(); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }
     if (project) { showView("forge"); const selected = state.projects.find((item) => item.id === project); if (selected) renderInspector(selected); return; }
+    if (contentReview && contentVerdict) { const note = $("#asset-content-review-note")?.value || ""; await api("/api/assets/" + contentReview + "/content-review", { method: "POST", body: JSON.stringify({ verdict: contentVerdict, note }) }); delete state.contentReviews[contentReview]; toast(contentVerdict === "safe" ? "Content marked safe" : "Content kept flagged", contentVerdict !== "safe"); await refresh(); return; }
+    if (contentReviewHistory) { if (state.contentReviews[contentReviewHistory]) { delete state.contentReviews[contentReviewHistory]; renderAssetInspector(); } else { const result = await api("/api/assets/" + contentReviewHistory + "/content-reviews"); state.contentReviews[contentReviewHistory] = result.reviews || []; renderAssetInspector(); } return; }
     if (reviewAsset && reviewAction) { const note = $("#asset-review-note")?.value || ""; await api(`/api/assets/${reviewAsset}/review`, { method: "POST", body: JSON.stringify({ action: reviewAction, note }) }); delete state.assetReviews[reviewAsset]; toast(reviewAction === "reject" ? "Asset rejected" : "Rights decision recorded"); await refresh(); return; }
     if (approveLicensed) { await api(`/api/assets/${approveLicensed}/review`, { method: "POST", body: JSON.stringify({ action: "approve_licensed" }) }); delete state.assetReviews[approveLicensed]; toast("Provider license approved"); await refresh(); return; }
     if (approveOwned) { await api(`/api/assets/${approveOwned}/review`, { method: "POST", body: JSON.stringify({ action: "approve_owned" }) }); delete state.assetReviews[approveOwned]; toast("Ownership attested"); await refresh(); return; }

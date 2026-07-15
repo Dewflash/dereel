@@ -43,6 +43,7 @@ from .pipeline import (
     check_asset_health,
     delete_project,
     get_project_assets,
+    list_content_reviews,
     list_asset_reviews,
     list_assets,
     move_project_asset,
@@ -52,6 +53,7 @@ from .pipeline import (
     project_view,
     render_project,
     review_asset,
+    review_content_asset,
     set_job,
     update_project_asset,
     update_project,
@@ -698,6 +700,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise KeyError("Asset not found")
             self.send_json({"reviews": list_asset_reviews(self.app.db, match.group(1))})
             return
+        match = re.fullmatch(r"/api/assets/([^/]+)/content-reviews", path)
+        if match:
+            if not self.app.db.get("assets", "id", match.group(1)):
+                raise KeyError("Asset not found")
+            self.send_json({"reviews": list_content_reviews(self.app.db, match.group(1))})
+            return
         match = re.fullmatch(r"/api/projects/([^/]+)/output/([^/]+)", path)
         if match:
             project = self.app.db.get("projects", "id", match.group(1))
@@ -866,6 +874,11 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             payload = self.read_json()
             self.send_json({"asset": review_asset(self.app.db, match.group(1), str(payload.get("action") or ""), str(payload.get("note") or ""))})
+            return
+        match = re.fullmatch(r"/api/assets/([^/]+)/content-review", path)
+        if match:
+            payload = self.read_json()
+            self.send_json({"asset": review_content_asset(self.app.db, match.group(1), str(payload.get("verdict") or ""), str(payload.get("note") or ""))})
             return
         match = re.fullmatch(r"/api/assets/([^/]+)/analyze", path)
         if match:

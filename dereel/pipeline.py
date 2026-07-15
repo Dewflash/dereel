@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -17,6 +18,75 @@ REVIEW_ACTIONS = {
     "approve_licensed": ("approved", "licensed_distribution"),
     "reject": ("rejected", "blocked"),
 }
+
+CONTENT_RISK_RULES = {
+    "violence": ("blood", "gore", "fight", "fighting", "weapon", "gun", "knife", "shooting", "assault", "war"),
+    "adult": ("adult", "explicit", "porn", "nude", "sexual", "nsfw"),
+    "hate": ("hate", "slur", "extremist", "terrorist"),
+    "self_harm": ("suicide", "self harm", "selfharm", "cutting"),
+    "dangerous": ("stunt", "dangerous", "fire", "explosion", "injury"),
+}
+CONTENT_RISK_HIGH_CATEGORIES = {"violence", "adult", "hate", "self_harm"}
+
+
+def _asset_analysis(row: dict[str, Any]) -> dict[str, Any]:
+    analysis = row.get("analysis") if isinstance(row.get("analysis"), dict) else json_loads(row.get("analysis_json"), {})
+    return analysis if isinstance(analysis, dict) else {}
+
+
+def _content_scan(row: dict[str, Any]) -> dict[str, Any]:
+    analysis = _asset_analysis(row)
+    tags = row.get("tags") if isinstance(row.get("tags"), list) else json_loads(row.get("tags_json"), [])
+    fields = [row.get("title"), row.get("source_url"), row.get("platform")]
+    fields.extend(tags if isinstance(tags, list) else [])
+    for key in ("watch_source", "source_path", "original_path"):
+        fields.append(analysis.get(key))
+    normalized = re.sub(r"[^a-z0-9]+", " ", " ".join(str(value or "") for value in fields).lower()).strip()
+    categories: set[str] = set()
+    matches: list[str] = []
+    for category, terms in CONTENT_RISK_RULES.items():
+        for term in terms:
+            phrase = f" {term.replace('-', ' ')} "
+            if phrase in f" {normalized} ":
+                categories.add(category)
+                matches.append(f"{category}:{term}")
+    ordered_categories = sorted(categories)
+    ordered_matches = sorted(matches)
+    signature = json_dumps({"categories": ordered_categories, "matches": ordered_matches})
+    severity = "high" if categories & CONTENT_RISK_HIGH_CATEGORIES else "medium" if categories else "none"
+    return {
+        "categories": ordered_categories,
+        "matches": ordered_matches,
+        "severity": severity,
+        "signature": signature,
+    }
+
+
+def content_risk(row: dict[str, Any]) -> dict[str, Any]:
+    scan = _content_scan(row)
+    analysis = _asset_analysis(row)
+    stored_review = analysis.get("content_review") if isinstance(analysis.get("content_review"), dict) else {}
+    current_review = bool(stored_review) and str(stored_review.get("signature") or "") == scan["signature"]
+    status = "clear"
+    if scan["matches"]:
+        status = "flagged"
+        if current_review and stored_review.get("verdict") == "safe":
+            status = "safe"
+    result = {
+        "status": status,
+        "severity": scan["severity"],
+        "categories": scan["categories"],
+        "matches": scan["matches"],
+        "basis": "metadata",
+    }
+    if stored_review:
+        result["review"] = {
+            "verdict": str(stored_review.get("verdict") or ""),
+            "note": str(stored_review.get("note") or ""),
+            "reviewed_at": str(stored_review.get("reviewed_at") or ""),
+            "current": current_review,
+        }
+    return result
 
 
 def asset_provenance(row: dict[str, Any]) -> dict[str, Any]:
@@ -60,6 +130,9 @@ def review_flags(row: dict[str, Any]) -> list[str]:
         flags.append("blocked")
     if float(row.get("duration") or 0) > 180:
         flags.append("over-180-seconds")
+    risk = row.get("content_risk") if isinstance(row.get("content_risk"), dict) else content_risk(row)
+    if risk.get("status") == "flagged":
+        flags.append(f"content-risk-{risk.get('severity') or 'medium'}")
     return flags
 
 
@@ -76,6 +149,8 @@ def asset_health(row: dict[str, Any]) -> dict[str, Any]:
 
 
 def production_health_error(row: dict[str, Any]) -> str:
+    if content_risk(row).get("status") == "flagged":
+        return "content risk requires review"
     status = str(asset_health(row).get("status") or "")
     if status == "missing":
         return "media file is missing"
@@ -92,6 +167,7 @@ def asset_view(row: dict[str, Any]) -> dict[str, Any]:
     result["analysis"] = json_loads(result.pop("analysis_json", "{}"), {})
     result["has_audio"] = bool(result.get("has_audio"))
     result["health"] = asset_health(result)
+    result["content_risk"] = content_risk(result)
     result["review_flags"] = review_flags(result)
     result["provenance"] = asset_provenance(result)
     return result
@@ -472,6 +548,53 @@ def list_asset_reviews(db: Database, asset_id: str, limit: int = 30) -> list[dic
     with db.connection() as connection:
         rows = connection.execute("SELECT * FROM asset_reviews WHERE asset_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?", (asset_id, limit)).fetchall()
     return [dict(row) for row in rows]
+
+
+def review_content_asset(db: Database, asset_id: str, verdict: str, note: str = "") -> dict[str, Any]:
+    if verdict not in {"safe", "flagged"}:
+        raise ValueError("Unsupported content review verdict")
+    with db.connection() as connection:
+        row = connection.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if not row:
+            raise KeyError("Asset not found")
+        if row["kind"] != "media" or not row["local_path"]:
+            raise ValueError("Only local media can receive a content review")
+        current = dict(row)
+        scan = _content_scan(current)
+        timestamp = now_iso()
+        review = {
+            "verdict": verdict,
+            "categories": scan["categories"],
+            "matches": scan["matches"],
+            "signature": scan["signature"],
+            "basis": "metadata",
+            "note": str(note or "")[:300],
+            "reviewed_at": timestamp,
+        }
+        analysis = _asset_analysis(current)
+        analysis["content_review"] = review
+        connection.execute("UPDATE assets SET analysis_json = ?, updated_at = ? WHERE id = ?", (json_dumps(analysis), timestamp, asset_id))
+        connection.execute(
+            "INSERT INTO asset_content_reviews(id, asset_id, verdict, categories_json, matches_json, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (new_id("content_review"), asset_id, verdict, json_dumps(scan["categories"]), json_dumps(scan["matches"]), str(note or "")[:300], timestamp),
+        )
+    return asset_view(db.get("assets", "id", asset_id) or {})
+
+
+def list_content_reviews(db: Database, asset_id: str, limit: int = 30) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 100))
+    with db.connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM asset_content_reviews WHERE asset_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
+            (asset_id, limit),
+        ).fetchall()
+    result = []
+    for row in rows:
+        item = dict(row)
+        item["categories"] = json_loads(item.pop("categories_json", "[]"), [])
+        item["matches"] = json_loads(item.pop("matches_json", "[]"), [])
+        result.append(item)
+    return result
 
 
 def bulk_review_assets(db: Database, asset_ids: list[str], action: str, note: str = "") -> list[dict[str, Any]]:
