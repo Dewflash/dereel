@@ -261,13 +261,12 @@ def update_automation(db: Database, automation_id: str, payload: dict[str, Any])
         raise ValueError("Automation configuration cannot change while it is processing")
     current = automation_view(row)
     values = _normalized_payload(db, payload, current)
-    configuration_keys = {
+    rebuild_keys = {
         "name", "watch_dir", "source_mode", "provider", "search_query", "provider_limit", "theme", "duration_target", "style",
         "title_template", "caption_template", "tags", "default_rights", "music_asset_id", "music_volume", "sfx_asset_id",
-        "sfx_volume", "sfx_start_time", "voiceover_asset_id", "voiceover_volume", "voiceover_start_time", "platforms", "account_ids",
-        "interval_minutes", "publish_delay_minutes", "auto_render",
+        "sfx_volume", "sfx_start_time", "voiceover_asset_id", "voiceover_volume", "voiceover_start_time",
     }
-    if configuration_keys.intersection(payload):
+    if rebuild_keys.intersection(payload):
         values["last_project_id"] = ""
     values["updated_at"] = now_iso()
     db.update("automations", "id", automation_id, values)

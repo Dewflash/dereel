@@ -471,6 +471,8 @@ class CoreModelTests(unittest.TestCase):
             db.update("automations", "id", automation["id"], {"last_project_id": project["id"]})
             unchanged = update_automation(db, automation["id"], {"enabled": True})
             self.assertEqual(unchanged["last_project_id"], project["id"])
+            destination_edit = update_automation(db, automation["id"], {"publish_delay_minutes": 15, "platforms": ["youtube"]})
+            self.assertEqual(destination_edit["last_project_id"], project["id"])
             changed = update_automation(db, automation["id"], {"theme": "new theme"})
             self.assertEqual(changed["last_project_id"], "")
 
