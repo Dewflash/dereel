@@ -15,7 +15,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
-from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account
+from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
 from dereel.server import AppState, Handler, close_multipart_files, finalize_publish_success, parse_multipart, parse_multipart_stream, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
@@ -783,6 +783,20 @@ class CoreModelTests(unittest.TestCase):
         self.assertIn("media", diagnostics)
         self.assertIn("ffmpeg", diagnostics["media"])
         self.assertEqual({provider["id"] for provider in diagnostics["providers"]}, {"pexels", "pixabay"})
+
+    def test_platform_export_bounds_match_current_reel_limits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "instagram.mp4"
+            media.write_bytes(b"export")
+            metadata = {"duration": 2.0, "width": 1080, "height": 1920}
+            with patch("dereel.publisher.probe", return_value=metadata):
+                self.assertIn("3 second minimum", " ".join(validate_export(media, "instagram")))
+            metadata["duration"] = 901.0
+            with patch("dereel.publisher.probe", return_value=metadata):
+                self.assertIn("900 second limit", " ".join(validate_export(media, "instagram")))
+            metadata["duration"] = 30.0
+            with patch("dereel.publisher.probe", return_value=metadata):
+                self.assertEqual(validate_export(media, "instagram"), [])
 
     def test_publisher_payload_provenance_keeps_source_and_audio_ids(self) -> None:
         provenance = publish_provenance(

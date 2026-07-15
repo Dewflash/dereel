@@ -17,9 +17,9 @@ from .media import probe, sha256_file
 
 
 PLATFORM_SPECS: dict[str, dict[str, Any]] = {
-    "youtube": {"label": "YouTube Shorts", "max_seconds": 180, "requires_public_url": False},
-    "instagram": {"label": "Instagram Reels", "max_seconds": 90, "requires_public_url": True},
-    "tiktok": {"label": "TikTok", "max_seconds": 180, "requires_public_url": False},
+    "youtube": {"label": "YouTube Shorts", "min_seconds": 0, "max_seconds": 180, "requires_public_url": False},
+    "instagram": {"label": "Instagram Reels", "min_seconds": 3, "max_seconds": 900, "requires_public_url": True},
+    "tiktok": {"label": "TikTok", "min_seconds": 0, "max_seconds": 180, "requires_public_url": False},
 }
 
 PLATFORM_ENV = {
@@ -109,6 +109,9 @@ def validate_export(path: Path, platform: str) -> list[str]:
         return ["Rendered export is missing"]
     metadata = probe(path)
     problems: list[str] = []
+    minimum = PLATFORM_SPECS[platform]["min_seconds"]
+    if metadata["duration"] < minimum:
+        problems.append(f"Export is shorter than the {minimum} second minimum")
     if metadata["duration"] <= 0:
         problems.append("Export has no duration")
     if metadata["duration"] > PLATFORM_SPECS[platform]["max_seconds"]:
