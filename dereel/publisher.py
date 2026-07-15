@@ -16,7 +16,7 @@ from typing import Any
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
 from .media import probe, sha256_file
-from .pipeline import PRODUCTION_RIGHTS, content_risk, production_health_error
+from .pipeline import PRODUCTION_RIGHTS, check_asset_health, content_risk, production_health_error
 
 
 PLATFORM_SPECS: dict[str, dict[str, Any]] = {
@@ -258,6 +258,7 @@ def _validate_publish_sources(db: Database, payload: dict[str, Any]) -> None:
         risk = content_risk(asset)
         if risk.get("status") == "flagged":
             raise ValueError(f"Publish source '{title}' has a content-risk review requirement")
+        asset = check_asset_health(db, asset_id)
         health_error = production_health_error(asset)
         if health_error:
             raise ValueError(f"Publish source '{title}' is not healthy: {health_error}")

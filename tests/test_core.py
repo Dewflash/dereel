@@ -1462,7 +1462,7 @@ class CoreModelTests(unittest.TestCase):
                 },
             )
             project = db.get("projects", "id", project["id"]) or project
-            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"), patch("dereel.pipeline.validate_video", return_value={"duration": 4, "file_size": 6, "width": 720, "height": 1280, "has_audio": False}), patch("dereel.pipeline.sha256_file", return_value="source-hash"):
                 job = create_publish_jobs(db, project, ["youtube"])[0]
             review_asset(db, asset["id"], "reject", "Rights withdrawn")
             with self.assertRaisesRegex(ValueError, "no longer cleared"):
@@ -1581,11 +1581,11 @@ class CoreModelTests(unittest.TestCase):
             project = create_project(db, {"name": "Refreshing release", "theme": "cats"})
             db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(first_output), "manifest_json": json.dumps({"inputs": [{"asset_id": old_asset["id"]}]})})
             project = db.get("projects", "id", project["id"]) or project
-            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="first-hash"):
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="first-hash"), patch("dereel.pipeline.validate_video", return_value={"duration": 4, "file_size": 10, "width": 720, "height": 1280, "has_audio": False}), patch("dereel.pipeline.sha256_file", return_value="old-source"):
                 first_job = create_publish_jobs(db, project, ["youtube"])[0]
             db.update("projects", "id", project["id"], {"output_dir": str(second_output), "manifest_json": json.dumps({"inputs": [{"asset_id": new_asset["id"]}]})})
             refreshed_project = db.get("projects", "id", project["id"]) or project
-            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="second-hash"):
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="second-hash"), patch("dereel.pipeline.validate_video", return_value={"duration": 4, "file_size": 10, "width": 720, "height": 1280, "has_audio": False}), patch("dereel.pipeline.sha256_file", return_value="new-source"):
                 second_job = create_publish_jobs(db, refreshed_project, ["youtube"], scheduled_for="2026-07-16T12:00:00+08:00")[0]
             payload = json.loads(second_job["payload_json"])
             package_manifest = json.loads((second_output / "publish-manifest.json").read_text())
