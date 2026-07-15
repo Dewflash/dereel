@@ -519,6 +519,10 @@ class CoreModelTests(unittest.TestCase):
             outside = root / "outside.mp4"
             outside.write_bytes(b"outside")
             (watch_dir / "linked.mp4").symlink_to(outside)
+            outside_dir = root / "outside-folder"
+            outside_dir.mkdir()
+            (outside_dir / "nested.mp4").write_bytes(b"nested outside")
+            (watch_dir / "linked-folder").symlink_to(outside_dir, target_is_directory=True)
             db = Database(root / "test.sqlite3")
             automation = create_automation(db, {"name": "Symlink boundary", "watch_dir": str(watch_dir)})
             report = scan_watch_folder(db, automation, root / "library")

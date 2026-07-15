@@ -366,6 +366,10 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
         if item.is_symlink():
             return False
         try:
+            item.resolve().relative_to(watch_dir)
+        except ValueError:
+            return False
+        try:
             item.resolve().relative_to(excluded_root)
         except ValueError:
             return item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS
