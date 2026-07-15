@@ -5,6 +5,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -31,6 +32,7 @@ PLATFORM_ENV = {
 
 PUBLISH_COMPLETION_STATUSES = {"drafted", "published", "failed"}
 UPLOAD_RETRY_LIMIT = 3
+_PUBLISH_MANIFEST_LOCK = threading.Lock()
 
 
 def publish_result_status(remote_id: str) -> str:
@@ -232,21 +234,22 @@ def publish_provenance(project: dict[str, Any], output_dir: Path) -> dict[str, A
 
 
 def _write_publish_manifest(output_dir: Path, job_id: str, payload: dict[str, Any], scheduled_for: str | None) -> None:
-    manifest_path = output_dir / "publish-manifest.json"
-    existing = json_loads(manifest_path.read_text(), {}) if manifest_path.exists() else {}
-    if not isinstance(existing, dict):
-        existing = {}
-    jobs = [item for item in existing.get("jobs", []) if isinstance(item, dict) and item.get("id") != job_id]
-    jobs.append({"id": job_id, **payload, "scheduled_for": scheduled_for or ""})
-    existing["jobs"] = jobs
-    file_descriptor, temporary_name = tempfile.mkstemp(prefix=".publish-manifest-", suffix=".json", dir=output_dir)
-    os.close(file_descriptor)
-    temporary_path = Path(temporary_name)
-    try:
-        temporary_path.write_text(json.dumps(existing, indent=2))
-        temporary_path.replace(manifest_path)
-    finally:
-        temporary_path.unlink(missing_ok=True)
+    with _PUBLISH_MANIFEST_LOCK:
+        manifest_path = output_dir / "publish-manifest.json"
+        existing = json_loads(manifest_path.read_text(), {}) if manifest_path.exists() else {}
+        if not isinstance(existing, dict):
+            existing = {}
+        jobs = [item for item in existing.get("jobs", []) if isinstance(item, dict) and item.get("id") != job_id]
+        jobs.append({"id": job_id, **payload, "scheduled_for": scheduled_for or ""})
+        existing["jobs"] = jobs
+        file_descriptor, temporary_name = tempfile.mkstemp(prefix=".publish-manifest-", suffix=".json", dir=output_dir)
+        os.close(file_descriptor)
+        temporary_path = Path(temporary_name)
+        try:
+            temporary_path.write_text(json.dumps(existing, indent=2))
+            temporary_path.replace(manifest_path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
 
 def _normalize_schedule(scheduled_for: str | None) -> str:
