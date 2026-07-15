@@ -468,14 +468,27 @@ class AppState:
             raise KeyError("Automation not found")
         if not claim_automation(self.db, automation_id):
             raise ValueError("Automation is already running")
-        job = create_job(self.db, None, "automation", automation_id)
+        try:
+            job = create_job(self.db, None, "automation", automation_id)
+        except Exception as error:
+            try:
+                finish_automation(self.db, automation_id, error=str(error))
+            except Exception:
+                pass
+            raise
         return self.submit_automation(job, automation_id)
 
     def queue_due_automations(self) -> None:
         for automation in due_automations(self.db):
             if claim_automation(self.db, automation["id"]):
-                job = create_job(self.db, None, "automation", automation["id"])
-                self.submit_automation(job, automation["id"])
+                try:
+                    job = create_job(self.db, None, "automation", automation["id"])
+                    self.submit_automation(job, automation["id"])
+                except Exception as error:
+                    try:
+                        finish_automation(self.db, automation["id"], error=str(error))
+                    except Exception:
+                        pass
 
     def scheduler_diagnostics(self) -> dict[str, Any]:
         with self._scheduler_status_lock:

@@ -593,6 +593,23 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(stored["status"], "failed")
             self.assertEqual(stored["last_error"], "worker pool unavailable")
 
+    def test_automation_job_creation_failure_releases_manual_and_scheduled_claims(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = AppState(Settings(root=root, data_dir=root / "data", database_path=root / "data" / "test.sqlite3", originals_dir=root / "library", audio_dir=root / "audio", output_dir=root / "outputs", web_dir=root))
+            manual = create_automation(app.db, {"name": "Manual insert failure", "watch_dir": str(root)})
+            with patch("dereel.server.create_job", side_effect=RuntimeError("job insert failed")):
+                with self.assertRaisesRegex(RuntimeError, "job insert failed"):
+                    app.queue_automation(manual["id"])
+            stored_manual = app.db.get("automations", "id", manual["id"])
+            self.assertEqual((stored_manual["status"], stored_manual["last_error"]), ("failed", "job insert failed"))
+
+            scheduled = create_automation(app.db, {"name": "Scheduled insert failure", "watch_dir": str(root), "enabled": True, "interval_minutes": 15})
+            with patch("dereel.server.create_job", side_effect=RuntimeError("scheduled insert failed")):
+                app.queue_due_automations()
+            stored_scheduled = app.db.get("automations", "id", scheduled["id"])
+            self.assertEqual((stored_scheduled["status"], stored_scheduled["last_error"]), ("failed", "scheduled insert failed"))
+
     def test_restart_recovery_marks_interrupted_render_jobs_failed(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
