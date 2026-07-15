@@ -115,11 +115,41 @@ def _host_allowed(provider: str, url: str) -> bool:
     return parsed.scheme == "https" and parsed.hostname in PROVIDER_HOSTS.get(provider, set())
 
 
+def _provider_asset_exists(db: Database, provider: str, source_url: str, provider_id: str) -> bool:
+    with db.connection() as connection:
+        if source_url:
+            row = connection.execute(
+                "SELECT local_path FROM assets WHERE kind = 'media' AND platform = ? AND source_url = ? LIMIT 1",
+                (provider, source_url),
+            ).fetchone()
+            if row and row["local_path"] and Path(row["local_path"]).is_file():
+                return True
+        if provider_id:
+            rows = connection.execute(
+                "SELECT local_path, analysis_json FROM assets WHERE kind = 'media' AND platform = ?",
+                (provider,),
+            ).fetchall()
+            for row in rows:
+                if not row["local_path"] or not Path(row["local_path"]).is_file():
+                    continue
+                try:
+                    details = json.loads(row["analysis_json"] or "{}")
+                except json.JSONDecodeError:
+                    details = {}
+                if str(details.get("provider_id") or "") == provider_id:
+                    return True
+    return False
+
+
 def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str, Any], automation_id: str = "") -> dict[str, Any]:
     provider = str(payload.get("provider") or "")
     download_url = str(payload.get("download_url") or "")
     if not _host_allowed(provider, download_url):
         raise ValueError("Only approved provider media hosts can be imported")
+    source_url = str(payload.get("source_url") or "").strip()
+    provider_id = str(payload.get("provider_id") or "").strip()
+    if _provider_asset_exists(db, provider, source_url, provider_id):
+        raise ValueError("Provider import matches existing asset")
     request = urllib.request.Request(download_url, headers={"User-Agent": "DeReel/0.1"})
     destination_dir.mkdir(parents=True, exist_ok=True)
     filename = re.sub(r"[^a-zA-Z0-9._-]+", "-", Path(urllib.parse.urlparse(download_url).path).name or "provider-video")
@@ -140,11 +170,13 @@ def import_provider_asset(db: Database, destination_dir: Path, payload: dict[str
                     output.write(chunk)
         metadata = validate_video(destination)
         metadata["fingerprint"] = sha256_file(destination)
+        if provider_id:
+            metadata["provider_id"] = provider_id
         return create_asset(
             db,
             kind="media",
             title=str(payload.get("title") or f"{provider.title()} import"),
-            source_url=str(payload.get("source_url") or ""),
+            source_url=source_url,
             platform=provider,
             local_path=str(destination),
             mime_type=content_type,

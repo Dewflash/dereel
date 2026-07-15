@@ -14,7 +14,7 @@ from urllib.parse import parse_qs
 from dereel.db import Database
 from dereel.media import add_text_overlay, sha256_file, text_overlay_backend, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
-from dereel.scout import _host_allowed
+from dereel.scout import _host_allowed, import_provider_asset
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
@@ -816,6 +816,36 @@ class CoreModelTests(unittest.TestCase):
         self.assertTrue(_host_allowed("pixabay", "https://cdn.pixabay.com/video.mp4"))
         self.assertFalse(_host_allowed("pexels", "https://example.com/video.mp4"))
         self.assertFalse(_host_allowed("pexels", "http://videos.pexels.com/video.mp4"))
+
+    def test_provider_import_skips_existing_source_before_download(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            existing_path = root / "existing.mp4"
+            existing_path.write_bytes(b"existing")
+            create_asset(
+                db,
+                kind="media",
+                title="Existing provider clip",
+                source_url="https://pexels.com/video/1",
+                platform="pexels",
+                local_path=str(existing_path),
+                rights_status="pending_review",
+                metadata={"fingerprint": "existing"},
+            )
+            with patch("dereel.scout.urllib.request.urlopen") as opener:
+                with self.assertRaisesRegex(ValueError, "matches existing asset"):
+                    import_provider_asset(
+                        db,
+                        root / "library",
+                        {
+                            "provider": "pexels",
+                            "provider_id": "1",
+                            "download_url": "https://videos.pexels.com/video.mp4",
+                            "source_url": "https://pexels.com/video/1",
+                        },
+                    )
+            opener.assert_not_called()
 
     def test_publisher_capabilities_are_explicit(self) -> None:
         capabilities = {item["id"]: item for item in platform_capabilities()}

@@ -377,6 +377,7 @@ def scan_provider_sources(db: Database, automation: dict[str, Any], originals_di
                 originals_dir,
                 {
                     "provider": result["provider"],
+                    "provider_id": result.get("provider_id", ""),
                     "download_url": result["download_url"],
                     "source_url": result.get("source_url", ""),
                     "title": result.get("title", "Provider import"),
