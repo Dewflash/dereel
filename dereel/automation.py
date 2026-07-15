@@ -452,6 +452,27 @@ def _automation_asset_ids(db: Database, automation_id: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
+def _publish_job_platforms(db: Database, project_id: str) -> set[str]:
+    with db.connection() as connection:
+        rows = connection.execute(
+            "SELECT DISTINCT platform FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL",
+            (project_id,),
+        ).fetchall()
+    return {str(row["platform"]) for row in rows}
+
+
+def _prepare_automation_publish_jobs(db: Database, automation: dict[str, Any], project_id: str, fallback_project: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    if not automation["platforms"]:
+        return []
+    scheduled_for = ""
+    if automation["publish_delay_minutes"] > 0:
+        scheduled_for = (datetime.now(timezone.utc) + timedelta(minutes=automation["publish_delay_minutes"])).replace(microsecond=0).isoformat()
+    project = db.get("projects", "id", project_id) or fallback_project
+    if not project:
+        raise KeyError("Automation project not found")
+    return create_publish_jobs(db, project, automation["platforms"], scheduled_for, account_ids=automation["account_ids"])
+
+
 def run_automation(
     db: Database,
     automation_id: str,
@@ -476,7 +497,11 @@ def run_automation(
     last_project = db.get("projects", "id", automation.get("last_project_id", "")) if automation.get("last_project_id") else None
     output_exists = bool(last_project and last_project.get("output_dir") and (Path(last_project["output_dir"]) / "final.mp4").is_file())
     if not imported_ids and last_project and last_project.get("status") == "ready" and output_exists:
-        return {"status": "idle", "project_id": last_project["id"], "scan": report, "message": "No new sources"}
+        covered_platforms = _publish_job_platforms(db, last_project["id"])
+        if not automation["platforms"] or set(automation["platforms"]).issubset(covered_platforms):
+            return {"status": "idle", "project_id": last_project["id"], "scan": report, "message": "No new sources"}
+        publish_jobs = _prepare_automation_publish_jobs(db, automation, last_project["id"])
+        return {"status": "rendered", "project_id": last_project["id"], "output_dir": last_project["output_dir"], "publish_jobs": publish_jobs, "scan": report}
     if not asset_ids:
         return {"status": "no_sources", "scan": report}
     candidate_ids = imported_ids or asset_ids
@@ -507,6 +532,7 @@ def run_automation(
                 "audio_tracks": audio_tracks,
             },
         )
+    db.update("automations", "id", automation_id, {"last_project_id": project["id"], "updated_at": now_iso()})
     planned = plan_project(db, project["id"], candidate_ids)
     if progress:
         progress(0.45, f"Planned {len(planned['assets'])} production-ready clip{'' if len(planned['assets']) == 1 else 's'}")
@@ -515,13 +541,7 @@ def run_automation(
     if not automation["auto_render"]:
         return {"status": "planned", "project_id": project["id"], "scan": report}
     rendered = render_project(db, project["id"], output_dir, lambda value, message: progress(0.45 + value * 0.5, message) if progress else None)
-    publish_jobs: list[dict[str, Any]] = []
-    if automation["platforms"]:
-        scheduled_for = ""
-        if automation["publish_delay_minutes"] > 0:
-            scheduled_for = (datetime.now(timezone.utc) + timedelta(minutes=automation["publish_delay_minutes"])).replace(microsecond=0).isoformat()
-        project_row = db.get("projects", "id", project["id"]) or project
-        publish_jobs = create_publish_jobs(db, project_row, automation["platforms"], scheduled_for, account_ids=automation["account_ids"])
+    publish_jobs = _prepare_automation_publish_jobs(db, automation, project["id"], project)
     return {
         "status": "rendered",
         "project_id": project["id"],

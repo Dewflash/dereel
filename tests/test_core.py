@@ -565,6 +565,40 @@ class CoreModelTests(unittest.TestCase):
                 delete_publishing_account(db, "automation_youtube")
             delete_publishing_account(db, "automation_instagram")
 
+    def test_automation_retry_reuses_project_when_publish_setup_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Retry release", "watch_dir": str(root), "platforms": ["youtube"]})
+            video_path = root / "video.mp4"
+            video_path.write_bytes(b"video")
+            video = create_asset(
+                db,
+                kind="media",
+                title="Retry source",
+                local_path=str(video_path),
+                mime_type="video/mp4",
+                rights_status="owned_distribution",
+                metadata={"duration": 4, "width": 720, "height": 1280},
+                automation_id=automation["id"],
+            )
+            output_dir = root / "rendered"
+            with patch("dereel.automation.scan_watch_folder", return_value={"found": 1, "imported": [video], "duplicates": [], "errors": []}), patch("dereel.automation.plan_project", return_value={"assets": [{"asset_id": video["id"]}]}), patch("dereel.automation.render_project", return_value={"output_dir": str(output_dir)}), patch("dereel.automation.create_publish_jobs", side_effect=ValueError("account missing")):
+                with self.assertRaisesRegex(ValueError, "account missing"):
+                    run_automation(db, automation["id"], root / "library", root / "outputs")
+            stored_automation = db.get("automations", "id", automation["id"]) or {}
+            project_id = stored_automation["last_project_id"]
+            self.assertTrue(project_id)
+            output_dir.mkdir()
+            (output_dir / "final.mp4").write_bytes(b"rendered")
+            db.update("projects", "id", project_id, {"status": "ready", "output_dir": str(output_dir)})
+            with patch("dereel.automation.scan_watch_folder", return_value={"found": 0, "imported": [], "duplicates": [], "errors": []}), patch("dereel.automation.create_publish_jobs", return_value=[]) as publisher:
+                retried = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual((retried["status"], retried["project_id"]), ("rendered", project_id))
+            self.assertEqual(publisher.call_count, 1)
+            with db.connection() as connection:
+                self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
+
     def test_automation_submission_failure_is_persisted_and_releases_claim(self) -> None:
         class RejectingPool:
             def submit(self, *_args, **_kwargs):
