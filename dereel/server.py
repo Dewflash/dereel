@@ -150,11 +150,17 @@ def parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dic
     match = re.search(r"boundary=(?:\"([^\"]+)\"|([^;]+))", content_type)
     if not match:
         raise ValueError("Multipart boundary is missing")
-    boundary = (match.group(1) or match.group(2)).encode()
+    boundary = (match.group(1) or match.group(2)).strip().encode()
     fields: dict[str, str] = {}
     files: dict[str, tuple[str, bytes, str]] = {}
-    for raw in body.split(b"--" + boundary):
-        raw = raw.strip(b"\r\n-")
+    delimiter = b"--" + boundary
+    for raw in body.split(delimiter)[1:]:
+        if raw.startswith(b"--"):
+            break
+        if raw.startswith(b"\r\n"):
+            raw = raw[2:]
+        if raw.endswith(b"\r\n"):
+            raw = raw[:-2]
         if not raw or b"\r\n\r\n" not in raw:
             continue
         raw_headers, content = raw.split(b"\r\n\r\n", 1)

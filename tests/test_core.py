@@ -17,7 +17,7 @@ from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
-from dereel.server import AppState, Handler, finalize_publish_success, recover_interrupted_jobs, runtime_diagnostics, safe_path
+from dereel.server import AppState, Handler, finalize_publish_success, parse_multipart, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
 
 class CoreModelTests(unittest.TestCase):
@@ -84,6 +84,17 @@ class CoreModelTests(unittest.TestCase):
 
             with self.assertRaisesRegex(ValueError, "outside"):
                 safe_path(root, "../outside.mp4")
+
+    def test_multipart_parser_preserves_binary_file_trailing_bytes(self) -> None:
+        boundary = "DeReelBoundary"
+        body = (
+            f"--{boundary}\r\n"
+            'Content-Disposition: form-data; name="file"; filename="clip.mp4"\r\n'
+            "Content-Type: video/mp4\r\n\r\n"
+        ).encode() + b"binary-data\r\n-" + f"\r\n--{boundary}--\r\n".encode()
+        fields, files = parse_multipart(f"multipart/form-data; boundary={boundary}", body)
+        self.assertEqual(fields, {})
+        self.assertEqual(files["file"], ("clip.mp4", b"binary-data\r\n-", "video/mp4"))
 
     def test_database_initializes_and_preserves_asset_rights(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
