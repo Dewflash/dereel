@@ -657,6 +657,27 @@ class CoreModelTests(unittest.TestCase):
             with db.connection() as connection:
                 self.assertEqual(connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0], 1)
 
+    def test_automation_destination_edit_refreshes_pending_outbox_without_rerender(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            for account_id in ("old-account", "new-account"):
+                db.insert("publishing_accounts", {"id": account_id, "platform": "youtube", "label": account_id, "status": "not_connected", "config_json": "{}", "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            automation = create_automation(db, {"name": "Destination refresh", "watch_dir": str(root), "platforms": ["youtube"], "account_ids": {"youtube": "old-account"}})
+            output_dir = root / "output"
+            output_dir.mkdir()
+            (output_dir / "final.mp4").write_bytes(b"rendered")
+            project = create_project(db, {"name": "Existing output", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            db.update("automations", "id", automation["id"], {"last_project_id": project["id"]})
+            db.insert("publish_jobs", {"id": "pending-youtube", "project_id": project["id"], "account_id": "old-account", "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "cancelled_at": None, "payload_json": "{}", "created_at": "2026-01-01", "updated_at": "2026-01-01"})
+            update_automation(db, automation["id"], {"account_ids": {"youtube": "new-account"}, "publish_delay_minutes": 15})
+            with patch("dereel.automation.scan_watch_folder", return_value={"found": 0, "imported": [], "duplicates": [], "errors": []}), patch("dereel.automation.create_publish_jobs", return_value=[]) as publisher:
+                result = run_automation(db, automation["id"], root / "library", root / "outputs")
+            self.assertEqual((result["status"], result["project_id"]), ("rendered", project["id"]))
+            self.assertEqual(publisher.call_args.kwargs["account_ids"], {"youtube": "new-account"})
+            self.assertEqual(publisher.call_args.args[2], ["youtube"])
+
     def test_automation_submission_failure_is_persisted_and_releases_claim(self) -> None:
         class RejectingPool:
             def submit(self, *_args, **_kwargs):

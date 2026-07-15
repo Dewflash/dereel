@@ -464,11 +464,15 @@ def _automation_asset_ids(db: Database, automation_id: str) -> list[str]:
     return [str(row[0]) for row in rows]
 
 
-def _publish_job_platforms(db: Database, project_id: str) -> set[str]:
+def _publish_job_platforms(db: Database, project_id: str, statuses: set[str] | None = None) -> set[str]:
+    statuses = statuses or {"queued", "ready", "drafted", "published"}
+    if not statuses:
+        return set()
+    placeholders = ", ".join("?" for _ in statuses)
     with db.connection() as connection:
         rows = connection.execute(
-            "SELECT DISTINCT platform FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL AND status IN ('queued', 'ready', 'drafted', 'published')",
-            (project_id,),
+            f"SELECT DISTINCT platform FROM publish_jobs WHERE project_id = ? AND cancelled_at IS NULL AND status IN ({placeholders})",
+            [project_id, *sorted(statuses)],
         ).fetchall()
     return {str(row["platform"]) for row in rows}
 
@@ -512,10 +516,15 @@ def run_automation(
     output_exists = bool(last_project and last_project.get("output_dir") and (Path(last_project["output_dir"]) / "final.mp4").is_file())
     if not imported_ids and last_project and last_project.get("status") == "ready" and output_exists:
         covered_platforms = _publish_job_platforms(db, last_project["id"])
-        if not automation["platforms"] or set(automation["platforms"]).issubset(covered_platforms):
+        if not automation["platforms"]:
             return {"status": "idle", "project_id": last_project["id"], "scan": report, "message": "No new sources"}
+        refreshable_platforms = _publish_job_platforms(db, last_project["id"], {"queued", "ready", "failed"})
         missing_platforms = [platform for platform in automation["platforms"] if platform not in covered_platforms]
-        publish_jobs = _prepare_automation_publish_jobs(db, automation, last_project["id"], platforms=missing_platforms)
+        refresh_platforms = [platform for platform in automation["platforms"] if platform in refreshable_platforms]
+        requested_platforms = list(dict.fromkeys([*missing_platforms, *refresh_platforms]))
+        if not requested_platforms:
+            return {"status": "idle", "project_id": last_project["id"], "scan": report, "message": "No new sources"}
+        publish_jobs = _prepare_automation_publish_jobs(db, automation, last_project["id"], platforms=requested_platforms)
         return {"status": "rendered", "project_id": last_project["id"], "output_dir": last_project["output_dir"], "publish_jobs": publish_jobs, "scan": report}
     if not asset_ids:
         return {"status": "no_sources", "scan": report}
