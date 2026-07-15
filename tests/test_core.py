@@ -711,6 +711,34 @@ class CoreModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "pending publish job"):
                 render_project(app.db, project["id"], root / "outputs", lambda _progress, _message: None)
 
+    def test_planning_failure_marks_project_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            source = root / "clip.mp4"
+            source.write_bytes(b"clip")
+            create_asset(db, kind="media", title="Clip", local_path=str(source), mime_type="video/mp4", rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
+            project = create_project(db, {"name": "Planner recovery", "theme": "clip"})
+            with patch("dereel.pipeline.score_breakdown", side_effect=RuntimeError("planner failed")):
+                with self.assertRaisesRegex(RuntimeError, "planner failed"):
+                    plan_project(db, project["id"])
+            self.assertEqual(db.get("projects", "id", project["id"])["status"], "failed")
+
+    def test_render_failure_marks_project_retryable(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            source = root / "clip.mp4"
+            source.write_bytes(b"clip")
+            asset = create_asset(db, kind="media", title="Clip", local_path=str(source), mime_type="video/mp4", rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
+            project = create_project(db, {"name": "Render recovery", "theme": "clip"})
+            with db.connection() as connection:
+                connection.execute("INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 2, 1, 'test')", (project["id"], asset["id"]))
+            with patch("dereel.pipeline.validate_video", return_value={"duration": 2, "file_size": 4, "width": 720, "height": 1280, "has_audio": False}), patch("dereel.pipeline.normalize_segment", side_effect=RuntimeError("render failed")):
+                with self.assertRaisesRegex(RuntimeError, "render failed"):
+                    render_project(db, project["id"], root / "outputs", lambda _progress, _message: None)
+            self.assertEqual(db.get("projects", "id", project["id"])["status"], "failed")
+
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")

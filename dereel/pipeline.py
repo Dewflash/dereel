@@ -916,6 +916,18 @@ def plan_project(db: Database, project_id: str, candidate_ids: list[str] | None 
             "UPDATE projects SET status = 'planning', output_dir = '', manifest_json = '{}', updated_at = ? WHERE id = ?",
             (now_iso(), project_id),
         )
+
+    try:
+        return _finish_project_plan(db, project_id, project, candidate_ids)
+    except Exception:
+        try:
+            db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
+        except Exception:
+            pass
+        raise
+
+
+def _finish_project_plan(db: Database, project_id: str, project: dict[str, Any], candidate_ids: list[str] | None = None) -> dict[str, Any]:
     theme_tokens = {token.lower() for token in project["theme"].replace(",", " ").split() if len(token) > 2}
     candidate_filter = ""
     candidate_params: list[str] = []
@@ -1180,6 +1192,12 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         db.update("projects", "id", project_id, {"status": "ready", "output_dir": str(output_dir), "manifest_json": json_dumps(manifest), "updated_at": now_iso()})
         progress(1.0, "Render complete")
         return {"output_dir": str(output_dir), "manifest": manifest}
+    except Exception:
+        try:
+            db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
+        except Exception:
+            pass
+        raise
     finally:
         shutil.rmtree(work_dir, ignore_errors=True)
 
