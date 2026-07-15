@@ -14,6 +14,28 @@ PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
 AUDIO_ROLES = {"music", "sfx", "voiceover"}
 
 
+def asset_provenance(row: dict[str, Any]) -> dict[str, Any]:
+    platform = str(row.get("platform") or "")
+    automation_id = str(row.get("automation_id") or "")
+    if row.get("kind") == "reference":
+        source_type = "reference"
+    elif automation_id:
+        source_type = "automation_import"
+    elif platform in {"pexels", "pixabay"}:
+        source_type = "provider_import"
+    else:
+        source_type = "local_import"
+    return {
+        "source_type": source_type,
+        "platform": platform,
+        "source_url": str(row.get("source_url") or ""),
+        "local_path": str(row.get("local_path") or ""),
+        "automation_id": automation_id,
+        "fingerprint": str(row.get("fingerprint") or ""),
+        "captured_at": str(row.get("created_at") or ""),
+    }
+
+
 def review_flags(row: dict[str, Any]) -> list[str]:
     flags: list[str] = []
     if row.get("kind") == "reference":
@@ -35,6 +57,7 @@ def asset_view(row: dict[str, Any]) -> dict[str, Any]:
     result["analysis"] = json_loads(result.pop("analysis_json", "{}"), {})
     result["has_audio"] = bool(result.get("has_audio"))
     result["review_flags"] = review_flags(result)
+    result["provenance"] = asset_provenance(result)
     return result
 
 
@@ -43,7 +66,8 @@ def get_project_audio(db: Database, project_id: str) -> list[dict[str, Any]]:
         rows = connection.execute(
             """
             SELECT pa.project_id, pa.asset_id, pa.role, pa.volume, pa.start_time,
-                   a.title, a.local_path, a.mime_type, a.duration, a.rights_status, a.status
+                   a.title, a.local_path, a.mime_type, a.duration, a.rights_status, a.status,
+                   a.kind, a.source_url, a.platform, a.automation_id, a.fingerprint, a.created_at
             FROM project_audio pa JOIN assets a ON a.id = pa.asset_id
             WHERE pa.project_id = ? ORDER BY pa.role, pa.start_time, pa.asset_id
             """,
@@ -65,7 +89,8 @@ def get_project_assets(db: Database, project_id: str) -> list[dict[str, Any]]:
     with db.connection() as connection:
         rows = connection.execute(
             """
-            SELECT pa.*, a.title, a.local_path, a.rights_status, a.duration, a.width, a.height, a.tags_json
+            SELECT pa.*, a.title, a.local_path, a.rights_status, a.duration, a.width, a.height, a.tags_json,
+                   a.kind, a.source_url, a.platform, a.automation_id, a.fingerprint, a.created_at
             FROM project_assets pa JOIN assets a ON a.id = pa.asset_id
             WHERE pa.project_id = ? ORDER BY pa.order_index
             """,
@@ -463,7 +488,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             segment = work_dir / f"segment-{index:02d}.mp4"
             normalize_segment(source, segment, start, duration)
             segments.append(segment)
-            manifest["inputs"].append({"asset_id": item["asset_id"], "title": item["title"], "source": str(source), "in": start, "duration": duration})
+            manifest["inputs"].append({"asset_id": item["asset_id"], "title": item["title"], "source": str(source), "provenance": asset_provenance(item), "in": start, "duration": duration})
             progress(0.12 + ((index + 1) / len(enabled)) * 0.56, f"Prepared clip {index + 1} of {len(enabled)}")
 
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -493,7 +518,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
                 volume = _bounded_float(track.get("volume"), 0.16, 0.0, 1.0)
                 start_time = _bounded_float(track.get("start_time"), 0.0, 0.0, 3600.0)
                 mix_inputs.append({"source": audio_source, "role": track["role"], "volume": volume, "start_time": start_time})
-                manifest_tracks.append({"asset_id": track["asset_id"], "title": track.get("title", ""), "role": track["role"], "source": str(audio_source), "volume": volume, "start_time": start_time})
+                manifest_tracks.append({"asset_id": track["asset_id"], "title": track.get("title", ""), "role": track["role"], "source": str(audio_source), "provenance": asset_provenance(track), "volume": volume, "start_time": start_time})
             mixed = output_dir / "mixed.mp4"
             mix_audio_tracks(base, mix_inputs, mixed)
             base.unlink(missing_ok=True)
@@ -516,8 +541,13 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         manifest_path = output_dir / "render-manifest.json"
         manifest_path.write_text(json.dumps(manifest, indent=2))
         credit_assets = [item["asset_id"] for item in enabled]
-        credit_assets.extend(track["asset_id"] for track in manifest.get("audio", {}).get("tracks", []))
-        (output_dir / "credits.json").write_text(json.dumps({"assets": credit_assets}, indent=2))
+        credit_records = []
+        for item in enabled:
+            credit_records.append({"asset_id": item["asset_id"], "title": item["title"], "rights_status": item["rights_status"], **asset_provenance(item)})
+        for track in audio_tracks:
+            credit_assets.append(track["asset_id"])
+            credit_records.append({"asset_id": track["asset_id"], "title": track.get("title", ""), "role": track["role"], "rights_status": track["rights_status"], **asset_provenance(track)})
+        (output_dir / "credits.json").write_text(json.dumps({"project_id": project_id, "assets": credit_assets, "provenance": credit_records}, indent=2))
         db.update("projects", "id", project_id, {"status": "ready", "output_dir": str(output_dir), "manifest_json": json_dumps(manifest), "updated_at": now_iso()})
         progress(1.0, "Render complete")
         return {"output_dir": str(output_dir), "manifest": manifest}

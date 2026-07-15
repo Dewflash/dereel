@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], platforms: [], providerResults: [], assetFilter: "all", selectedAssets: new Set(), selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], platforms: [], providerResults: [], assetFilter: "all", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -93,6 +93,7 @@ function renderAssets() {
   $("#asset-count").textContent = `${assets.length} asset${assets.length === 1 ? "" : "s"}`;
   $("#asset-grid").innerHTML = assets.length ? assets.map(assetCard).join("") : empty("Nothing here yet", state.assetFilter === "references" ? "Save a source URL to Scout." : "Import a cleared video to populate the board.");
   renderReviewToolbar();
+  renderAssetInspector();
 }
 
 function isReviewableAsset(asset) {
@@ -119,7 +120,20 @@ function assetCard(asset) {
   const providerImport = ["pexels", "pixabay"].includes(String(asset.platform || "").toLowerCase());
   const action = canApprove ? providerImport ? `<button class="mini-button" data-approve-licensed="${asset.id}">Approve license</button>` : `<button class="mini-button" data-approve-owned="${asset.id}">Declare owned</button>` : canAdd ? `<button class="mini-button" data-add-asset="${asset.id}">Add to edit</button>` : `<span class="count-label">Reference only</span>`;
   const flags = (asset.review_flags || []).map((flag) => `<span class="risk-flag">${escapeHtml(flag.replaceAll("-", " "))}</span>`).join("");
-  return `<article class="asset-card"><div class="asset-preview">${selector}${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}<button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+  return `<article class="asset-card"><div class="asset-preview">${selector}${preview}</div><div class="asset-content"><strong title="${escapeHtml(asset.title)}">${escapeHtml(asset.title)}</strong><div class="asset-meta"><span>${asset.kind === "reference" ? escapeHtml(asset.platform || "reference") : `${formatDuration(asset.duration)} · ${formatBytes(asset.file_size)}`}</span>${statusPill(asset.rights_status)}</div><div class="asset-tags">${tags}${flags}</div><div class="asset-actions">${action}<button class="mini-button" data-inspect-asset="${asset.id}">Inspect</button><button class="mini-button danger" data-reject-asset="${asset.id}">Reject</button></div></div></article>`;
+}
+
+function renderAssetInspector() {
+  const node = $("#asset-inspector");
+  if (!node) return;
+  const asset = state.assets.find((item) => item.id === state.inspectedAssetId);
+  if (!asset) { node.hidden = true; node.innerHTML = ""; return; }
+  const provenance = asset.provenance || {};
+  const sourceUrl = /^https?:\/\//i.test(asset.source_url || "") ? asset.source_url : "";
+  const fingerprint = provenance.fingerprint ? `${provenance.fingerprint.slice(0, 20)}...` : "Not analyzed";
+  const flags = (asset.review_flags || []).map((flag) => `<span class="risk-flag">${escapeHtml(flag.replaceAll("-", " "))}</span>`).join("") || `<span class="count-label">No review flags</span>`;
+  node.hidden = false;
+  node.innerHTML = `<div class="asset-inspector-header"><div><span class="eyebrow accent">SOURCE RECORD</span><h3>${escapeHtml(asset.title)}</h3><p>Inspect the origin and update the curation metadata without changing the source file.</p></div><button class="text-button" type="button" data-action="close-asset-inspector">Close</button></div><div class="inspector-grid"><div class="asset-detail-list"><div class="asset-detail"><span>Origin</span><strong>${escapeHtml(provenance.source_type || "unknown")}</strong></div><div class="asset-detail"><span>Platform</span><strong>${escapeHtml(provenance.platform || "local")}</strong></div><div class="asset-detail"><span>Automation</span><strong>${escapeHtml(provenance.automation_id || "Manual import")}</strong></div><div class="asset-detail"><span>Fingerprint</span><code title="${escapeHtml(provenance.fingerprint || "")}">${escapeHtml(fingerprint)}</code></div><div class="asset-detail"><span>Local file</span><code>${escapeHtml(provenance.local_path || "Reference only")}</code></div><div class="asset-detail"><span>Source URL</span>${sourceUrl ? `<a class="inspector-link" href="${escapeHtml(sourceUrl)}" target="_blank" rel="noreferrer">${escapeHtml(sourceUrl)}</a>` : `<strong>${escapeHtml(asset.source_url || "No source URL")}</strong>`}</div><div class="asset-flags"><span>Review flags</span><div>${flags}</div></div></div><form class="inspector-form" id="asset-inspector-form" data-asset-id="${escapeHtml(asset.id)}"><label>Title<input name="title" value="${escapeHtml(asset.title)}" maxlength="160" required /></label><label>Tags<input name="tags" value="${escapeHtml((asset.tags || []).join(", "))}" placeholder="cute, funny, reaction" /></label><label>Source URL<input name="source_url" type="url" value="${escapeHtml(asset.source_url || "")}" placeholder="https://..." /></label><button class="button secondary full" type="submit">Save curation</button><p class="form-note">Rights decisions stay in the review queue. This form only edits descriptive metadata.</p></form></div>`;
 }
 
 function renderAudioSelect() {
@@ -336,13 +350,14 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
     if (action === "select-visible") { state.visibleAssets.filter(isReviewableAsset).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
     if (action === "clear-selection") { state.selectedAssets.clear(); renderAssets(); return; }
+    if (action === "close-asset-inspector") { state.inspectedAssetId = ""; renderAssets(); return; }
     if (bulkAction) { await submitBulkReview(bulkAction); return; }
     if (action === "cancel-automation") { resetAutomationForm(); return; }
     if (action === "new-project") { showView("forge"); $("#project-form input[name=name]").focus(); return; }
@@ -354,6 +369,7 @@ async function handleClick(event) {
     if (toggleAutomation) { const automation = state.automations.find((item) => item.id === toggleAutomation); if (automation) { await api(`/api/automations/${toggleAutomation}`, { method: "PATCH", body: JSON.stringify({ enabled: !automation.enabled }) }); toast(automation.enabled ? "Automation paused" : "Automation enabled"); await refresh(); } return; }
     if (deleteAutomation) { if (!window.confirm("Delete this automation recipe? Imported assets will stay in the library.")) return; await api(`/api/automations/${deleteAutomation}`, { method: "DELETE" }); toast("Automation deleted"); await refresh(); return; }
     if (rejectAsset) { await api(`/api/assets/${rejectAsset}`, { method: "PATCH", body: JSON.stringify({ status: "rejected", rights_status: "blocked" }) }); toast("Asset rejected"); await refresh(); return; }
+    if (inspectAsset) { state.inspectedAssetId = inspectAsset; showView("scout"); renderAssetInspector(); return; }
     if (addAsset) { showView("forge"); const selected = state.selectedProject || (state.projects.length === 1 ? state.projects[0] : null); if (!selected) { toast("Open a project before adding a clip", true); return; } await api(`/api/projects/${selected.id}/assets`, { method: "POST", body: JSON.stringify({ asset_id: addAsset }) }); toast("Clip added to the selected project"); await refresh(); return; }
     if (saveClip || toggleClip) { const card = target.closest(".timeline-clip"); const clipProject = projectId || card?.dataset.projectId; const clipId = saveClip || toggleClip; const body = toggleClip ? { enabled: Number(enabled) } : { in_point: Number($(".clip-in", card).value), out_point: Number($(".clip-out", card).value) }; await api(`/api/projects/${clipProject}/assets/${clipId}`, { method: "POST", body: JSON.stringify(body) }); toast(toggleClip ? "Clip state updated" : "Trim points saved"); await refresh(); return; }
     if (providerSave || providerImport) { const item = state.providerResults.find((result) => result.provider_id === (providerSave || providerImport)); if (!item) { toast("Provider result expired", true); return; } if (providerSave) { await api("/api/assets/reference", { method: "POST", body: JSON.stringify({ title: item.title, source_url: item.source_url, platform: item.provider, tags: [item.provider] }) }); toast("Reference saved to Scout"); } else { await api("/api/scout/import", { method: "POST", body: JSON.stringify({ provider: item.provider, download_url: item.download_url, source_url: item.source_url, title: item.title, tags: [item.provider] }) }); toast("Provider asset imported for review"); } await refresh(); return; }
@@ -368,6 +384,15 @@ async function handleClick(event) {
 
 async function submitReference(form) {
   try { const data = Object.fromEntries(new FormData(form)); const result = await api("/api/assets/reference", { method: "POST", body: JSON.stringify({ ...data, tags: String(data.tags || "").split(",") }) }); toast(`${result.asset.title} saved to Scout`); form.reset(); await refresh(); } catch (error) { toast(error.message, true); }
+}
+
+async function submitAssetCuration(form) {
+  try {
+    const data = Object.fromEntries(new FormData(form));
+    await api(`/api/assets/${form.dataset.assetId}`, { method: "PATCH", body: JSON.stringify({ title: data.title, source_url: data.source_url, tags: String(data.tags || "").split(",") }) });
+    toast("Curation metadata saved");
+    await refresh();
+  } catch (error) { toast(error.message, true); }
 }
 
 async function submitProject(form) {
@@ -421,6 +446,7 @@ function handleAssetSelection(event) {
 
 document.addEventListener("click", handleClick);
 document.addEventListener("change", handleAssetSelection);
+document.addEventListener("submit", (event) => { if (event.target.id === "asset-inspector-form") { event.preventDefault(); submitAssetCuration(event.target); } });
 $("#upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitUpload(event.currentTarget); });
 $("#audio-upload-form").addEventListener("submit", (event) => { event.preventDefault(); submitAudioUpload(event.currentTarget); });
 $("#reference-form").addEventListener("submit", (event) => { event.preventDefault(); submitReference(event.currentTarget); });

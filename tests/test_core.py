@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 import shutil
@@ -47,6 +48,17 @@ class CoreModelTests(unittest.TestCase):
             local = create_asset(db, kind="media", title="Owned clip", platform="local", local_path="/tmp/owned.mp4", rights_status="pending_review", metadata={"fingerprint": "owned"})
             self.assertEqual(provider["review_flags"], ["provider-license-review"])
             self.assertEqual(local["review_flags"], ["rights-attestation"])
+
+    def test_asset_provenance_distinguishes_reference_provider_and_automation_origins(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            reference = create_asset(db, kind="reference", title="Saved link", platform="TikTok", source_url="https://example.com/reference")
+            provider = create_asset(db, kind="media", title="Stock clip", platform="pexels", source_url="https://pexels.com/video/1", local_path="/tmp/stock.mp4", rights_status="pending_review", metadata={"fingerprint": "stock"})
+            automation = create_asset(db, kind="media", title="Watched clip", platform="local-watch", source_url="file:///tmp/watched.mp4", local_path="/tmp/watched.mp4", rights_status="owned_distribution", automation_id="automation_1", metadata={"fingerprint": "watched"})
+            self.assertEqual(reference["provenance"]["source_type"], "reference")
+            self.assertEqual(provider["provenance"]["source_type"], "provider_import")
+            self.assertEqual(automation["provenance"]["source_type"], "automation_import")
+            self.assertEqual(automation["provenance"]["fingerprint"], "watched")
 
     def test_bulk_review_updates_rights_atomically(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -315,6 +327,10 @@ class CoreModelTests(unittest.TestCase):
             self.assertTrue(output.is_file())
             self.assertGreater(output.stat().st_size, 0)
             self.assertEqual(result["manifest"]["outputs"]["master"], str(output))
+            self.assertEqual(result["manifest"]["inputs"][0]["provenance"]["source_type"], "local_import")
+            credits = json.loads((Path(result["output_dir"]) / "credits.json").read_text())
+            self.assertEqual(credits["assets"], [asset["id"]])
+            self.assertEqual(credits["provenance"][0]["fingerprint"], asset["fingerprint"])
             captions = Path(result["output_dir"]) / "captions.srt"
             self.assertTrue(captions.is_file())
             self.assertIn("1\n00:00:00,000", captions.read_text())

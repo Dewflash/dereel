@@ -557,6 +557,17 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.read_json()
             allowed = {"title", "source_url", "platform", "status", "rights_status"}
             values = {key: payload[key] for key in allowed if key in payload}
+            if "title" in values:
+                values["title"] = str(values["title"] or "Untitled source").strip()[:160]
+            if "source_url" in values:
+                values["source_url"] = str(values["source_url"] or "").strip()[:1000]
+            if "tags" in payload:
+                tags = payload["tags"]
+                if isinstance(tags, str):
+                    tags = tags.split(",")
+                if not isinstance(tags, list):
+                    raise ValueError("tags must be a list or comma-separated string")
+                values["tags_json"] = json_dumps(sorted({str(tag).strip().lower() for tag in tags if str(tag).strip()}))
             if "status" in values and values["status"] not in {"candidate", "approved", "rejected", "ready"}:
                 raise ValueError("Unsupported asset status")
             if "rights_status" in values and values["rights_status"] not in {"private_reference", "owned_distribution", "licensed_distribution", "blocked", "pending_review"}:
