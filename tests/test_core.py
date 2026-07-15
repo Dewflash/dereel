@@ -11,12 +11,12 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import bulk_review_assets, create_asset, create_project, plan_project, render_project, score_asset, update_project_asset
+from dereel.pipeline import bulk_review_assets, create_asset, create_job, create_project, plan_project, render_project, score_asset, set_job, update_project_asset
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, due_automations, finish_automation, run_automation, scan_provider_sources
 from dereel.publisher import account_view, platform_capabilities, publish_instagram_reel, publish_job, publish_provenance, publish_tiktok_draft
 from dereel.config import Settings
-from dereel.server import AppState
+from dereel.server import AppState, recover_interrupted_jobs
 
 
 class CoreModelTests(unittest.TestCase):
@@ -163,6 +163,20 @@ class CoreModelTests(unittest.TestCase):
             stored = app.db.get("automations", "id", automation["id"])
             self.assertEqual(stored["status"], "failed")
             self.assertEqual(stored["last_error"], "worker pool unavailable")
+
+    def test_restart_recovery_marks_interrupted_render_jobs_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Interrupted", "theme": "recovery"})
+            db.update("projects", "id", project["id"], {"status": "rendering"})
+            job = create_job(db, project["id"], "render")
+            set_job(db, job["id"], status="running", message="Preparing render")
+            recovered = recover_interrupted_jobs(db)
+            self.assertEqual(recovered, [job["id"]])
+            stored_job = db.get("jobs", "id", job["id"])
+            self.assertEqual((stored_job["status"], stored_job["error"]), ("failed", "Interrupted by process restart"))
+            self.assertEqual(db.get("projects", "id", project["id"])["status"], "failed")
 
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

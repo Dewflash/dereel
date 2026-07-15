@@ -47,6 +47,30 @@ from .scout import configured_providers, import_provider_asset, search as search
 
 MAX_UPLOAD_BYTES = 800 * 1024 * 1024
 JOB_POOL = ThreadPoolExecutor(max_workers=2, thread_name_prefix="dereel-job")
+INTERRUPTED_JOB_ERROR = "Interrupted by process restart"
+
+
+def recover_interrupted_jobs(db: Database) -> list[str]:
+    recovered: list[str] = []
+    timestamp = now_iso()
+    with db.connection() as connection:
+        rows = connection.execute("SELECT id, kind, project_id FROM jobs WHERE status IN ('queued', 'running')").fetchall()
+        for row in rows:
+            connection.execute(
+                "UPDATE jobs SET status = 'failed', message = ?, error = ?, updated_at = ? WHERE id = ?",
+                ("Job interrupted", INTERRUPTED_JOB_ERROR, timestamp, row["id"]),
+            )
+            if row["kind"] == "render" and row["project_id"]:
+                connection.execute(
+                    "UPDATE projects SET status = 'failed', updated_at = ? WHERE id = ? AND status IN ('planning', 'rendering')",
+                    (timestamp, row["project_id"]),
+                )
+            recovered.append(str(row["id"]))
+        connection.execute(
+            "UPDATE automations SET status = 'idle', updated_at = ? WHERE status IN ('queued', 'running')",
+            (timestamp,),
+        )
+    return recovered
 
 
 def parse_multipart(content_type: str, body: bytes) -> tuple[dict[str, str], dict[str, tuple[str, bytes, str]]]:
@@ -91,8 +115,7 @@ class AppState:
         self.settings = app_settings
         self.db = Database(app_settings.database_path)
         self.stop_event = threading.Event()
-        with self.db.connection() as connection:
-            connection.execute("UPDATE automations SET status = 'idle', updated_at = ? WHERE status IN ('queued', 'running')", (now_iso(),))
+        recover_interrupted_jobs(self.db)
 
     def execute_render(self, job_id: str, project_id: str) -> None:
         try:
