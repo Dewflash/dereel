@@ -567,6 +567,8 @@ def list_assets(db: Database, view: str = "all") -> list[dict[str, Any]]:
     with db.connection() as connection:
         rows = connection.execute(query, params).fetchall()
     assets = [asset_view(dict(row)) for row in rows]
+    if view == "ready":
+        return [asset for asset in assets if not production_health_error(asset)]
     if view == "review":
         return [
             asset for asset in assets

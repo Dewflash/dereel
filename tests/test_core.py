@@ -1401,6 +1401,7 @@ class CoreModelTests(unittest.TestCase):
             create_asset(db, kind="media", title="Missing", local_path=str(root / "missing.mp4"), rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
             counts = dashboard_counts(db)
             self.assertEqual((counts["assets"], counts["ready_assets"]), (3, 1))
+            self.assertEqual([asset["title"] for asset in list_assets(db, "ready")], ["Healthy"])
 
     def test_text_style_preset_changes_drawtext_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
