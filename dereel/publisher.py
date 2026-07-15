@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from .db import Database, json_dumps, json_loads, new_id, now_iso
-from .media import probe
+from .media import probe, sha256_file
 
 
 PLATFORM_SPECS: dict[str, dict[str, Any]] = {
@@ -131,6 +131,7 @@ def create_publish_jobs(
         problems = validate_export(export, platform)
         if problems:
             raise ValueError(f"{PLATFORM_SPECS[platform]['label']}: " + "; ".join(problems))
+        export_sha256 = sha256_file(export)
         with db.connection() as connection:
             existing = connection.execute(
                 "SELECT * FROM publish_jobs WHERE project_id = ? AND platform = ? AND status IN ('queued', 'ready') ORDER BY created_at DESC LIMIT 1",
@@ -139,8 +140,14 @@ def create_publish_jobs(
         if existing:
             existing_item = dict(existing)
             existing_payload = json.loads(existing_item.get("payload_json", "{}"))
-            if existing_payload.get("media_path") != str(export):
-                existing_payload.update({"title": project.get("title") or project.get("name"), "caption": project.get("caption", ""), "media_path": str(export)})
+            desired_payload = {
+                "title": project.get("title") or project.get("name"),
+                "caption": project.get("caption", ""),
+                "media_path": str(export),
+                "media_sha256": export_sha256,
+            }
+            if any(existing_payload.get(key) != value for key, value in desired_payload.items()):
+                existing_payload.update(desired_payload)
                 db.update("publish_jobs", "id", existing_item["id"], {"payload_json": json_dumps(existing_payload), "updated_at": now_iso()})
                 existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
             jobs.append(existing_item)
@@ -162,6 +169,7 @@ def create_publish_jobs(
             "title": project.get("title") or project.get("name"),
             "caption": project.get("caption", ""),
             "media_path": str(export),
+            "media_sha256": export_sha256,
             "requires_public_url": PLATFORM_SPECS[platform]["requires_public_url"],
             "state": "awaiting_account_connection",
             "privacy_status": "private",
@@ -189,6 +197,26 @@ def create_publish_jobs(
         existing.setdefault("jobs", []).append({"id": job_id, **payload, "scheduled_for": scheduled_for})
         manifest_path.write_text(json.dumps(existing, indent=2))
     return jobs
+
+
+def backfill_publish_integrity(db: Database) -> int:
+    updated = 0
+    with db.connection() as connection:
+        rows = connection.execute("SELECT id, payload_json FROM publish_jobs WHERE status IN ('ready', 'failed') AND cancelled_at IS NULL").fetchall()
+        for row in rows:
+            payload = json_loads(row["payload_json"], {})
+            if not isinstance(payload, dict) or payload.get("media_sha256"):
+                continue
+            media_path = Path(str(payload.get("media_path") or ""))
+            if not media_path.is_file():
+                continue
+            try:
+                payload["media_sha256"] = sha256_file(media_path)
+            except OSError:
+                continue
+            connection.execute("UPDATE publish_jobs SET payload_json = ?, updated_at = ? WHERE id = ?", (json_dumps(payload), now_iso(), row["id"]))
+            updated += 1
+    return updated
 
 
 def claim_publish_job(db: Database, job_id: str) -> bool:
@@ -541,6 +569,9 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
     problems = validate_export(export_path, str(job.get("platform") or ""))
     if problems:
         raise ValueError(f"{PLATFORM_SPECS.get(job.get('platform', ''), {}).get('label', 'Publish export')}: " + "; ".join(problems))
+    expected_sha256 = str(payload.get("media_sha256") or "").strip()
+    if expected_sha256 and sha256_file(export_path) != expected_sha256:
+        raise ValueError("Publish export changed after the outbox package was prepared")
     account = db.get("publishing_accounts", "id", job.get("account_id", "")) if job.get("account_id") else None
     if not account:
         with db.connection() as connection:

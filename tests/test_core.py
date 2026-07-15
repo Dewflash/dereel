@@ -15,7 +15,7 @@ from dereel.media import sha256_file, validate_audio, validate_video
 from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder
-from dereel.publisher import account_view, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
+from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
 from dereel.config import Settings
 from dereel.server import AppState, recover_interrupted_jobs, runtime_diagnostics
 
@@ -542,6 +542,38 @@ class CoreModelTests(unittest.TestCase):
         self.assertEqual(provenance["asset_ids"], ["asset_clip", "asset_music"])
         self.assertEqual((provenance["source_count"], provenance["audio_count"]), (1, 2))
         self.assertTrue(provenance["credits_path"].endswith("/credits.json"))
+
+    def test_publish_jobs_bind_to_export_fingerprint_and_reject_replacement_media(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            for platform in ("youtube", "instagram", "tiktok"):
+                (output_dir / f"{platform}.mp4").write_bytes(b"export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Fingerprint release", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                jobs = create_publish_jobs(db, project, ["youtube"])
+            payload = json.loads(jobs[0]["payload_json"])
+            self.assertEqual(payload["media_sha256"], "export-hash")
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="replacement-hash"):
+                with self.assertRaisesRegex(ValueError, "export changed"):
+                    publish_job(db, {"status": "failed", "platform": "youtube", "payload_json": json.dumps({"media_path": str(output_dir / "youtube.mp4"), "media_sha256": "export-hash"})})
+
+    def test_publish_integrity_backfill_upgrades_legacy_outbox_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            media = root / "youtube.mp4"
+            media.write_bytes(b"legacy export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Legacy integrity", "theme": "cats"})
+            job_id = "legacy_integrity"
+            db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": None, "platform": "youtube", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": json.dumps({"media_path": str(media)}), "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            self.assertEqual(backfill_publish_integrity(db), 1)
+            payload = json.loads(db.get("publish_jobs", "id", job_id)["payload_json"])
+            self.assertTrue(payload["media_sha256"])
 
     def test_published_jobs_cannot_be_replayed(self) -> None:
         with self.assertRaisesRegex(ValueError, "already marked published"):

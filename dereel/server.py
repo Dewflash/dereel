@@ -56,7 +56,7 @@ from .pipeline import (
     update_project,
     validate_project_output,
 )
-from .publisher import account_view, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, reschedule_publish_job, update_publishing_account
+from .publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, list_publish_attempts, mark_publish_job, platform_capabilities, publish_job, publish_job_view, reschedule_publish_job, update_publishing_account
 from .scout import configured_providers, import_provider_asset, search as search_provider
 
 
@@ -164,6 +164,7 @@ class AppState:
         self.db = Database(app_settings.database_path)
         self.stop_event = threading.Event()
         recover_interrupted_jobs(self.db)
+        backfill_publish_integrity(self.db)
 
     def execute_render(self, job_id: str, project_id: str) -> None:
         try:
