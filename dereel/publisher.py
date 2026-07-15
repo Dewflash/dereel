@@ -974,8 +974,16 @@ def publish_job(db: Database, job: dict[str, Any]) -> str:
         raise ValueError("Publish job payload is invalid") from error
     if not isinstance(payload, dict):
         raise ValueError("Publish job payload is invalid")
+    if db is not None and job.get("project_id"):
+        project = db.get("projects", "id", str(job["project_id"]))
+        if not project or project.get("status") != "ready":
+            raise ValueError("Publish project is not ready")
     _validate_publish_sources(db, payload)
     export_path = Path(payload.get("media_path") or "")
+    if db is not None and job.get("project_id"):
+        project_output_dir = Path(str(project.get("output_dir") or "")).resolve()
+        if not project_output_dir.is_dir() or export_path.resolve().parent != project_output_dir:
+            raise ValueError("Publish export is not from the current project output")
     problems = validate_export(export_path, str(job.get("platform") or ""))
     if problems:
         raise ValueError(f"{PLATFORM_SPECS.get(job.get('platform', ''), {}).get('label', 'Publish export')}: " + "; ".join(problems))

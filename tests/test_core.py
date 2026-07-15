@@ -1592,6 +1592,28 @@ class CoreModelTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "no longer cleared"):
                 publish_job(db, db.get("publish_jobs", "id", job["id"]) or job)
 
+    def test_publish_rejects_stale_project_state_and_output_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            replacement_dir = root / "replacement"
+            output_dir.mkdir()
+            replacement_dir.mkdir()
+            for platform in ("youtube", "instagram", "tiktok"):
+                (output_dir / f"{platform}.mp4").write_bytes(b"export")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Stale project", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="export-hash"):
+                job = create_publish_jobs(db, project, ["youtube"])[0]
+            db.update("projects", "id", project["id"], {"status": "failed"})
+            with self.assertRaisesRegex(ValueError, "project is not ready"):
+                publish_job(db, db.get("publish_jobs", "id", job["id"]) or job)
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(replacement_dir)})
+            with self.assertRaisesRegex(ValueError, "not from the current project output"):
+                publish_job(db, db.get("publish_jobs", "id", job["id"]) or job)
+
     def test_multi_platform_publish_preparation_is_atomic(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
