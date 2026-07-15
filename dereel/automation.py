@@ -362,6 +362,9 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
     excluded_root = originals_dir.expanduser().resolve()
 
     def is_source_file(item: Path) -> bool:
+        # A watch folder is an explicit boundary; never import through a symlink.
+        if item.is_symlink():
+            return False
         try:
             item.resolve().relative_to(excluded_root)
         except ValueError:

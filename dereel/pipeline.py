@@ -1290,12 +1290,37 @@ def validate_project_output(db: Database, project_id: str) -> dict[str, Any]:
     project = db.get("projects", "id", project_id)
     if not project:
         raise KeyError("Project not found")
-    output_dir = Path(project.get("output_dir") or "")
-    if not output_dir.is_dir():
+    output_dir_value = str(project.get("output_dir") or "").strip()
+    output_dir = Path(output_dir_value) if output_dir_value else None
+    if (output_dir is None or not output_dir.is_dir()) and project.get("status") not in {"ready", "failed"}:
         raise ValueError("Project output directory is missing")
     manifest = json_loads(project.get("manifest_json"), {})
-    validation = validate_render_outputs(output_dir)
+    if not isinstance(manifest, dict):
+        manifest = {}
+    validation = (
+        validate_render_outputs(output_dir)
+        if output_dir is not None and output_dir.is_dir()
+        else {"status": "failed", "problems": ["Project output directory is missing"], "outputs": {}}
+    )
     manifest["validation"] = validation
     status = "ready" if validation["status"] == "passed" else "failed"
-    db.update("projects", "id", project_id, {"status": status, "manifest_json": json_dumps(manifest), "updated_at": now_iso()})
+    timestamp = now_iso()
+    validation_error = "; ".join(str(problem) for problem in validation.get("problems", []) if str(problem).strip())
+    with db.connection() as connection:
+        connection.execute("BEGIN IMMEDIATE")
+        current = connection.execute("SELECT status FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not current:
+            raise KeyError("Project not found")
+        if current["status"] in {"queued", "rendering"}:
+            raise ValueError("Project is still processing")
+        connection.execute(
+            "UPDATE projects SET status = ?, manifest_json = ?, updated_at = ? WHERE id = ?",
+            (status, json_dumps(manifest), timestamp, project_id),
+        )
+        if status == "failed":
+            error = (f"Project output validation failed: {validation_error}" if validation_error else "Project output validation failed")[:1000]
+            connection.execute(
+                "UPDATE publish_jobs SET status = 'failed', error = ?, updated_at = ? WHERE project_id = ? AND status IN ('queued', 'ready', 'failed') AND cancelled_at IS NULL AND (claim_token IS NULL OR claim_token = '')",
+                (error, timestamp, project_id),
+            )
     return project_view(db, db.get("projects", "id", project_id) or {})

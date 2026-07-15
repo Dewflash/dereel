@@ -511,6 +511,73 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(repeat["found"], 1)
             self.assertEqual(repeat["duplicates"], ["round-one/cats/clip.mp4"])
 
+    def test_watch_import_does_not_follow_symlinks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            watch_dir = root / "watch"
+            watch_dir.mkdir()
+            outside = root / "outside.mp4"
+            outside.write_bytes(b"outside")
+            (watch_dir / "linked.mp4").symlink_to(outside)
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Symlink boundary", "watch_dir": str(watch_dir)})
+            report = scan_watch_folder(db, automation, root / "library")
+            self.assertEqual((report["found"], report["imported"], report["errors"]), (0, [], []))
+
+    def test_failed_output_validation_quarantines_unclaimed_publish_jobs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            output_dir = root / "output"
+            output_dir.mkdir()
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Invalid package", "theme": "test"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(output_dir)})
+            for job_id, platform, status, claim_token in (
+                ("ready-job", "youtube", "ready", None),
+                ("failed-job", "instagram", "failed", None),
+                ("claimed-job", "tiktok", "ready", "claim-live"),
+            ):
+                db.insert(
+                    "publish_jobs",
+                    {
+                        "id": job_id,
+                        "project_id": project["id"],
+                        "account_id": None,
+                        "platform": platform,
+                        "status": status,
+                        "scheduled_for": "",
+                        "remote_id": "",
+                        "error": "old error",
+                        "claim_token": claim_token,
+                        "claimed_at": "2026-01-01" if claim_token else None,
+                        "cancelled_at": None,
+                        "payload_json": "{}",
+                        "created_at": "2026-01-01",
+                        "updated_at": "2026-01-01",
+                    },
+                )
+            invalid = {"status": "failed", "problems": ["youtube: Rendered export is missing"], "outputs": {}}
+            with patch("dereel.pipeline.validate_render_outputs", return_value=invalid):
+                validated = validate_project_output(db, project["id"])
+            self.assertEqual(validated["status"], "failed")
+            self.assertEqual(db.get("projects", "id", project["id"])["status"], "failed")
+            self.assertEqual(db.get("publish_jobs", "id", "ready-job")["status"], "failed")
+            self.assertEqual(db.get("publish_jobs", "id", "failed-job")["status"], "failed")
+            self.assertIn("youtube: Rendered export is missing", db.get("publish_jobs", "id", "ready-job")["error"])
+            claimed = db.get("publish_jobs", "id", "claimed-job")
+            self.assertEqual((claimed["status"], claimed["claim_token"], claimed["error"]), ("ready", "claim-live", "old error"))
+
+    def test_missing_ready_output_is_marked_failed_without_probing_process_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            project = create_project(db, {"name": "Missing package", "theme": "test"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": ""})
+            with patch("dereel.pipeline.validate_render_outputs") as validator:
+                validated = validate_project_output(db, project["id"])
+            validator.assert_not_called()
+            self.assertEqual(validated["status"], "failed")
+            self.assertEqual(validated["manifest"]["validation"]["problems"], ["Project output directory is missing"])
+
     def test_production_gate_rejects_uncleared_and_flagged_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
