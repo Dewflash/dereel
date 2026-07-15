@@ -1090,6 +1090,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
             raise ValueError(f"Asset '{item['title']}' is not ready for production: {health_error}")
         validate_video(Path(item["local_path"]))
 
+    db.update("projects", "id", project_id, {"status": "rendering", "output_dir": "", "manifest_json": "{}", "updated_at": now_iso()})
     output_root.mkdir(parents=True, exist_ok=True)
     stamp = now_iso().replace(":", "").replace("+00", "Z") + "-" + new_id("run").removeprefix("run_")
     output_dir = output_root / project_id / stamp
@@ -1193,6 +1194,7 @@ def render_project(db: Database, project_id: str, output_root: Path, progress: C
         progress(1.0, "Render complete")
         return {"output_dir": str(output_dir), "manifest": manifest}
     except Exception:
+        shutil.rmtree(output_dir, ignore_errors=True)
         try:
             db.update("projects", "id", project_id, {"status": "failed", "updated_at": now_iso()})
         except Exception:

@@ -732,12 +732,18 @@ class CoreModelTests(unittest.TestCase):
             source.write_bytes(b"clip")
             asset = create_asset(db, kind="media", title="Clip", local_path=str(source), mime_type="video/mp4", rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
             project = create_project(db, {"name": "Render recovery", "theme": "clip"})
+            old_output = root / "outputs" / project["id"] / "old"
+            old_output.mkdir(parents=True)
+            (old_output / "final.mp4").write_bytes(b"old package")
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(old_output), "manifest_json": json.dumps({"validation": {"status": "passed"}})})
             with db.connection() as connection:
                 connection.execute("INSERT INTO project_assets(project_id, asset_id, order_index, in_point, out_point, enabled, selected_by) VALUES (?, ?, 0, 0, 2, 1, 'test')", (project["id"], asset["id"]))
             with patch("dereel.pipeline.validate_video", return_value={"duration": 2, "file_size": 4, "width": 720, "height": 1280, "has_audio": False}), patch("dereel.pipeline.normalize_segment", side_effect=RuntimeError("render failed")):
                 with self.assertRaisesRegex(RuntimeError, "render failed"):
                     render_project(db, project["id"], root / "outputs", lambda _progress, _message: None)
-            self.assertEqual(db.get("projects", "id", project["id"])["status"], "failed")
+            stored = db.get("projects", "id", project["id"])
+            self.assertEqual((stored["status"], stored["output_dir"], stored["manifest_json"]), ("failed", "", "{}"))
+            self.assertTrue((old_output / "final.mp4").is_file())
 
     def test_provider_automation_requires_query_and_keeps_imports_reviewable(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

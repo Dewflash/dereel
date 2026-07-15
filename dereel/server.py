@@ -407,7 +407,7 @@ class AppState:
                 raise ValueError("A render for this project is already queued or running")
             timestamp = now_iso()
             updated = connection.execute(
-                "UPDATE projects SET status = 'rendering', updated_at = ? WHERE id = ? AND status NOT IN ('planning', 'rendering')",
+                "UPDATE projects SET status = 'rendering', output_dir = '', manifest_json = '{}', updated_at = ? WHERE id = ? AND status NOT IN ('planning', 'rendering')",
                 (timestamp, project_id),
             )
             if updated.rowcount != 1:
