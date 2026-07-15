@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], selectedProviderIds: new Set(), assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, automationDraft: { accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], publishAttempts: {}, accounts: [], automations: [], automationRuns: [], assetReviews: {}, contentReviews: {}, selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], selectedProviderIds: new Set(), assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "", accountIds: {} }, automationDraft: { accountIds: {} }, editingAutomationId: "", editingAccountId: "", publishScheduleJobId: "", publishScheduleDrafts: {} };
 let refreshInFlight = null;
 let refreshQueued = false;
 
@@ -380,6 +380,8 @@ function renderPublishAccountPickers() {
 }
 
 function renderPublisher() {
+  const activeScheduleInput = $(".publish-schedule-input");
+  if (state.publishScheduleJobId && activeScheduleInput?.dataset.scheduleJob === state.publishScheduleJobId) state.publishScheduleDrafts[state.publishScheduleJobId] = activeScheduleInput.value;
   const projectSelect = $("#publish-project");
   if (projectSelect) {
     const readyProjects = state.projects.filter((project) => project.status === "ready" && project.output_dir);
@@ -415,7 +417,8 @@ function renderPublisher() {
     const cancelButton = editable ? `<button class="row-action danger-action" data-cancel-publish="${job.id}">Cancel</button>` : "";
     const markPosted = ["ready", "drafted"].includes(job.status) ? `<button class="row-action" data-mark-published="${job.id}">Mark posted</button>` : "";
     const action = processing ? "" : job.status === "ready" ? `<button class="row-action" data-run-publish="${job.id}">Publish</button>${markPosted}` : job.status === "drafted" ? markPosted : job.status === "failed" ? `<button class="row-action" data-run-publish="${job.id}">Retry</button>` : "";
-    const scheduleEditor = state.publishScheduleJobId === job.id && editable ? `<div class="publish-schedule"><input class="publish-schedule-input" type="datetime-local" value="${escapeHtml(toDatetimeLocal(job.scheduled_for))}" /><button class="row-action" data-save-schedule="${job.id}">Save</button><button class="row-action" data-cancel-schedule="${job.id}">Close</button></div>` : "";
+    const scheduleValue = state.publishScheduleDrafts[job.id] ?? toDatetimeLocal(job.scheduled_for);
+    const scheduleEditor = state.publishScheduleJobId === job.id && editable ? `<div class="publish-schedule"><input class="publish-schedule-input" data-schedule-job="${job.id}" type="datetime-local" value="${escapeHtml(scheduleValue)}" /><button class="row-action" data-save-schedule="${job.id}">Save</button><button class="row-action" data-cancel-schedule="${job.id}">Close</button></div>` : "";
     return `<div class="publish-entry"><div class="publish-row"><div class="row-icon">↗</div><div class="row-main"><strong>${escapeHtml(job.payload?.title || job.platform)}</strong><small>${escapeHtml(job.platform)}${escapeHtml(accountDetail)} · ${job.scheduled_for ? `scheduled ${escapeHtml(job.scheduled_for)}` : "ready for account connection"}${provenance}${job.error ? ` · ${escapeHtml(job.error)}` : ""}</small></div>${processing ? statusPill("publishing") : statusPill(job.status)}${historyButton}${scheduleButton}${cancelButton}${action}</div>${scheduleEditor}${history}</div>`;
   }).join("") : empty("Outbox is empty", "Rendered projects can be prepared for distribution.");
 }
@@ -742,10 +745,10 @@ async function handleClick(event) {
     if (publishHistory) { if (state.publishAttempts[publishHistory]) { delete state.publishAttempts[publishHistory]; } else { const result = await api(`/api/publishing/jobs/${publishHistory}/attempts`); state.publishAttempts[publishHistory] = result.attempts || []; } renderPublisher(); return; }
     if (runPublish) { await api(`/api/publishing/jobs/${runPublish}/publish`, { method: "POST", body: "{}" }); toast("Published successfully"); await refresh(); return; }
     if (markPublished) { await api(`/api/publishing/jobs/${markPublished}/mark-published`, { method: "POST", body: JSON.stringify({ remote_id: "manual" }) }); toast("Marked as posted"); await refresh(); return; }
-    if (editSchedule) { state.publishScheduleJobId = editSchedule; renderPublisher(); return; }
-    if (cancelSchedule) { state.publishScheduleJobId = ""; renderPublisher(); return; }
-    if (saveSchedule) { const input = $(".publish-schedule-input", target.closest(".publish-entry")); const value = input?.value ? new Date(input.value) : null; if (value && Number.isNaN(value.getTime())) throw new Error("Schedule time is invalid"); await api(`/api/publishing/jobs/${saveSchedule}`, { method: "PATCH", body: JSON.stringify({ scheduled_for: value ? value.toISOString() : "" }) }); state.publishScheduleJobId = ""; toast(value ? "Schedule updated" : "Schedule cleared"); await refresh(); return; }
-    if (cancelPublish) { if (!window.confirm("Cancel this outbox job? Its attempt history will stay available.")) return; await api(`/api/publishing/jobs/${cancelPublish}`, { method: "DELETE" }); state.publishScheduleJobId = ""; toast("Publish job cancelled"); await refresh(); return; }
+    if (editSchedule) { const activeScheduleInput = $(".publish-schedule-input"); if (activeScheduleInput?.dataset.scheduleJob) state.publishScheduleDrafts[activeScheduleInput.dataset.scheduleJob] = activeScheduleInput.value; if (!(editSchedule in state.publishScheduleDrafts)) { const job = state.publishingJobs.find((item) => item.id === editSchedule); if (job) state.publishScheduleDrafts[editSchedule] = toDatetimeLocal(job.scheduled_for); } state.publishScheduleJobId = editSchedule; renderPublisher(); return; }
+    if (cancelSchedule) { delete state.publishScheduleDrafts[cancelSchedule]; state.publishScheduleJobId = ""; renderPublisher(); return; }
+    if (saveSchedule) { const input = $(".publish-schedule-input", target.closest(".publish-entry")); const value = input?.value ? new Date(input.value) : null; if (value && Number.isNaN(value.getTime())) throw new Error("Schedule time is invalid"); await api(`/api/publishing/jobs/${saveSchedule}`, { method: "PATCH", body: JSON.stringify({ scheduled_for: value ? value.toISOString() : "" }) }); delete state.publishScheduleDrafts[saveSchedule]; state.publishScheduleJobId = ""; toast(value ? "Schedule updated" : "Schedule cleared"); await refresh(); return; }
+    if (cancelPublish) { if (!window.confirm("Cancel this outbox job? Its attempt history will stay available.")) return; await api(`/api/publishing/jobs/${cancelPublish}`, { method: "DELETE" }); delete state.publishScheduleDrafts[cancelPublish]; state.publishScheduleJobId = ""; toast("Publish job cancelled"); await refresh(); return; }
   } catch (error) { toast(error.message, true); }
 }
 
