@@ -492,6 +492,25 @@ class CoreModelTests(unittest.TestCase):
             history = list_asset_reviews(db, asset["id"])
             self.assertEqual((history[0]["action"], history[0]["previous_rights_status"], history[0]["note"]), ("approve_owned", "pending_review", "Automation attestation: owned distribution"))
 
+    def test_watch_import_scans_nested_folders_and_records_source_path(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nested = root / "round-one" / "cats"
+            nested.mkdir(parents=True)
+            source = nested / "clip.mp4"
+            source.write_bytes(b"clip")
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Nested watch", "watch_dir": str(root)})
+            metadata = {"duration": 3, "file_size": 4, "width": 720, "height": 1280, "has_audio": True}
+            with patch("dereel.automation.validate_video", return_value=metadata), patch("dereel.automation.sha256_file", return_value="nested-fingerprint"):
+                report = scan_watch_folder(db, automation, root / "library")
+            self.assertEqual(report["imported"][0]["analysis"]["watch_source"], str(source.resolve()))
+            self.assertEqual(report["imported"][0]["title"], "clip")
+            with patch("dereel.automation.validate_video", return_value=metadata), patch("dereel.automation.sha256_file", return_value="nested-fingerprint"):
+                repeat = scan_watch_folder(db, automation, root / "library")
+            self.assertEqual(repeat["found"], 1)
+            self.assertEqual(repeat["duplicates"], ["round-one/cats/clip.mp4"])
+
     def test_production_gate_rejects_uncleared_and_flagged_media(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

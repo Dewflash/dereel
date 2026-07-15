@@ -359,8 +359,21 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
     imported: list[dict[str, Any]] = []
     duplicates: list[str] = []
     errors: list[dict[str, str]] = []
-    files = sorted((item for item in watch_dir.iterdir() if item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS), key=lambda item: item.name.lower())
+    excluded_root = originals_dir.expanduser().resolve()
+
+    def is_source_file(item: Path) -> bool:
+        try:
+            item.resolve().relative_to(excluded_root)
+        except ValueError:
+            return item.is_file() and item.suffix.lower() in VIDEO_EXTENSIONS
+        return False
+
+    files = sorted(
+        (item for item in watch_dir.rglob("*") if is_source_file(item)),
+        key=lambda item: str(item.relative_to(watch_dir)).lower(),
+    )
     for source in files:
+        source_label = str(source.relative_to(watch_dir))
         destination: Path | None = None
         created_asset_id = ""
         try:
@@ -371,7 +384,7 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
             with db.connection() as connection:
                 duplicate = connection.execute("SELECT id FROM assets WHERE fingerprint = ? LIMIT 1", (fingerprint,)).fetchone()
             if duplicate:
-                duplicates.append(source.name)
+                duplicates.append(source_label)
                 continue
             asset_id = new_id("asset")
             content_type = mimetypes.guess_type(source.name)[0] or "video/mp4"
@@ -410,9 +423,9 @@ def scan_watch_folder(db: Database, automation: dict[str, Any], originals_dir: P
                 except OSError:
                     pass
             if "matches existing asset" in str(error):
-                duplicates.append(source.name)
+                duplicates.append(source_label)
             else:
-                errors.append({"file": source.name, "error": str(error)[:300]})
+                errors.append({"file": source_label, "error": str(error)[:300]})
     return {"found": len(files), "imported": imported, "duplicates": duplicates, "errors": errors}
 
 
