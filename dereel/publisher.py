@@ -131,6 +131,17 @@ def publish_provenance(project: dict[str, Any], output_dir: Path) -> dict[str, A
     }
 
 
+def _write_publish_manifest(output_dir: Path, job_id: str, payload: dict[str, Any], scheduled_for: str | None) -> None:
+    manifest_path = output_dir / "publish-manifest.json"
+    existing = json_loads(manifest_path.read_text(), {}) if manifest_path.exists() else {}
+    if not isinstance(existing, dict):
+        existing = {}
+    jobs = [item for item in existing.get("jobs", []) if isinstance(item, dict) and item.get("id") != job_id]
+    jobs.append({"id": job_id, **payload, "scheduled_for": scheduled_for or ""})
+    existing["jobs"] = jobs
+    manifest_path.write_text(json.dumps(existing, indent=2))
+
+
 def create_publish_jobs(
     db: Database,
     project: dict[str, Any],
@@ -159,18 +170,23 @@ def create_publish_jobs(
             ).fetchone()
         if existing:
             existing_item = dict(existing)
-            existing_payload = json.loads(existing_item.get("payload_json", "{}"))
+            existing_payload = json_loads(existing_item.get("payload_json"), {})
+            if not isinstance(existing_payload, dict):
+                existing_payload = {}
             desired_payload = {
                 "title": project.get("title") or project.get("name"),
                 "caption": project.get("caption", ""),
                 "media_path": str(export),
                 "media_sha256": export_sha256,
+                "requires_public_url": PLATFORM_SPECS[platform]["requires_public_url"],
+                "provenance": publish_provenance(project, output_dir),
             }
             if any(existing_payload.get(key) != value for key, value in desired_payload.items()):
                 existing_payload.update(desired_payload)
                 db.update("publish_jobs", "id", existing_item["id"], {"payload_json": json_dumps(existing_payload), "updated_at": now_iso()})
                 existing_item = db.get("publish_jobs", "id", existing_item["id"]) or existing_item
             jobs.append(existing_item)
+            _write_publish_manifest(output_dir, existing_item["id"], existing_payload, scheduled_for if scheduled_for is not None else existing_item.get("scheduled_for"))
             continue
         job_id = new_id("publish")
         now = now_iso()
@@ -212,10 +228,7 @@ def create_publish_jobs(
             },
         )
         jobs.append(db.get("publish_jobs", "id", job_id) or {})
-        manifest_path = output_dir / "publish-manifest.json"
-        existing = json.loads(manifest_path.read_text()) if manifest_path.exists() else {"jobs": []}
-        existing.setdefault("jobs", []).append({"id": job_id, **payload, "scheduled_for": scheduled_for})
-        manifest_path.write_text(json.dumps(existing, indent=2))
+        _write_publish_manifest(output_dir, job_id, payload, scheduled_for)
     return jobs
 
 

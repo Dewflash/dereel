@@ -643,6 +643,30 @@ class CoreModelTests(unittest.TestCase):
             payload = json.loads(db.get("publish_jobs", "id", job_id)["payload_json"])
             self.assertTrue(payload["media_sha256"])
 
+    def test_reused_publish_job_refreshes_provenance_and_package_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            first_output = root / "first"
+            second_output = root / "second"
+            first_output.mkdir()
+            second_output.mkdir()
+            (first_output / "youtube.mp4").write_bytes(b"first")
+            (second_output / "youtube.mp4").write_bytes(b"second")
+            db = Database(root / "test.sqlite3")
+            project = create_project(db, {"name": "Refreshing release", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"status": "ready", "output_dir": str(first_output), "manifest_json": json.dumps({"inputs": [{"asset_id": "asset_old"}]})})
+            project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="first-hash"):
+                first_job = create_publish_jobs(db, project, ["youtube"])[0]
+            db.update("projects", "id", project["id"], {"output_dir": str(second_output), "manifest_json": json.dumps({"inputs": [{"asset_id": "asset_new"}]})})
+            refreshed_project = db.get("projects", "id", project["id"]) or project
+            with patch("dereel.publisher.validate_export", return_value=[]), patch("dereel.publisher.sha256_file", return_value="second-hash"):
+                second_job = create_publish_jobs(db, refreshed_project, ["youtube"])[0]
+            payload = json.loads(second_job["payload_json"])
+            package_manifest = json.loads((second_output / "publish-manifest.json").read_text())
+            self.assertEqual((second_job["id"], payload["media_sha256"], payload["provenance"]["asset_ids"]), (first_job["id"], "second-hash", ["asset_new"]))
+            self.assertEqual((package_manifest["jobs"][0]["id"], package_manifest["jobs"][0]["provenance"]["asset_ids"]), (first_job["id"], ["asset_new"]))
+
     def test_publish_failure_fallback_closes_attempt_and_releases_claim(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")
