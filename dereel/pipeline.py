@@ -202,6 +202,29 @@ def move_project_asset(db: Database, project_id: str, asset_id: str, direction: 
     return next(item for item in get_project_assets(db, project_id) if item["asset_id"] == asset_id)
 
 
+def remove_project_asset(db: Database, project_id: str, asset_id: str) -> dict[str, Any]:
+    with db.connection() as connection:
+        _ensure_project_editable(connection, project_id)
+        exists = connection.execute(
+            "SELECT 1 FROM project_assets WHERE project_id = ? AND asset_id = ?",
+            (project_id, asset_id),
+        ).fetchone()
+        if not exists:
+            raise KeyError("Clip is not in this project")
+        connection.execute("DELETE FROM project_assets WHERE project_id = ? AND asset_id = ?", (project_id, asset_id))
+        rows = connection.execute(
+            "SELECT asset_id FROM project_assets WHERE project_id = ? ORDER BY order_index, asset_id",
+            (project_id,),
+        ).fetchall()
+        for index, row in enumerate(rows):
+            connection.execute(
+                "UPDATE project_assets SET order_index = ? WHERE project_id = ? AND asset_id = ?",
+                (index, project_id, row["asset_id"]),
+            )
+        _mark_project_dirty(connection, project_id)
+    return project_view(db, db.get("projects", "id", project_id) or {})
+
+
 def create_asset(
     db: Database,
     *,
