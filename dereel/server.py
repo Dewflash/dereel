@@ -42,6 +42,7 @@ from .pipeline import (
     check_asset_health,
     delete_project,
     get_project_assets,
+    list_asset_reviews,
     list_assets,
     move_project_asset,
     plan_project,
@@ -49,6 +50,7 @@ from .pipeline import (
     retry_failed_job,
     project_view,
     render_project,
+    review_asset,
     set_job,
     update_project_asset,
     update_project,
@@ -467,6 +469,12 @@ class Handler(BaseHTTPRequestHandler):
                 raise FileNotFoundError
             self.serve_file(safe_path(self.app.settings.root, asset["local_path"]))
             return
+        match = re.fullmatch(r"/api/assets/([^/]+)/reviews", path)
+        if match:
+            if not self.app.db.get("assets", "id", match.group(1)):
+                raise KeyError("Asset not found")
+            self.send_json({"reviews": list_asset_reviews(self.app.db, match.group(1))})
+            return
         match = re.fullmatch(r"/api/projects/([^/]+)/output/([^/]+)", path)
         if match:
             project = self.app.db.get("projects", "id", match.group(1))
@@ -607,6 +615,11 @@ class Handler(BaseHTTPRequestHandler):
         if match:
             self.send_json({"asset": check_asset_health(self.app.db, match.group(1))})
             return
+        match = re.fullmatch(r"/api/assets/([^/]+)/review", path)
+        if match:
+            payload = self.read_json()
+            self.send_json({"asset": review_asset(self.app.db, match.group(1), str(payload.get("action") or ""), str(payload.get("note") or ""))})
+            return
         match = re.fullmatch(r"/api/assets/([^/]+)/analyze", path)
         if match:
             self.send_json({"asset": analyze_asset(self.app.db, match.group(1))})
@@ -710,7 +723,7 @@ class Handler(BaseHTTPRequestHandler):
             asset_ids = payload.get("ids")
             if not isinstance(asset_ids, list):
                 raise ValueError("ids must be a list")
-            self.send_json({"assets": bulk_review_assets(self.app.db, asset_ids, str(payload.get("action") or ""))})
+            self.send_json({"assets": bulk_review_assets(self.app.db, asset_ids, str(payload.get("action") or ""), str(payload.get("note") or ""))})
             return
         match = re.fullmatch(r"/api/assets/([^/]+)", path)
         if match:
@@ -735,11 +748,20 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError("Unsupported asset status")
             if "rights_status" in values and values["rights_status"] not in {"private_reference", "owned_distribution", "licensed_distribution", "blocked", "pending_review"}:
                 raise ValueError("Unsupported rights status")
-            if values.get("rights_status") in {"owned_distribution", "licensed_distribution"}:
-                if asset.get("kind") != "media" or not asset.get("local_path"):
-                    raise ValueError("Only local media can be approved for production")
-                if asset.get("rights_status") not in {"pending_review", "private_reference"}:
-                    raise ValueError("Asset is not awaiting review")
+            decision = None
+            if values.get("rights_status") == "owned_distribution":
+                decision = "approve_owned"
+            elif values.get("rights_status") == "licensed_distribution":
+                decision = "approve_licensed"
+            elif values.get("rights_status") == "blocked" or values.get("status") == "rejected":
+                decision = "reject"
+            if decision:
+                descriptive = {key: value for key, value in values.items() if key not in {"status", "rights_status"}}
+                if descriptive:
+                    descriptive["updated_at"] = now_iso()
+                    self.app.db.update("assets", "id", asset_id, descriptive)
+                self.send_json({"asset": review_asset(self.app.db, asset_id, decision, str(payload.get("note") or ""))})
+                return
             if values:
                 values["updated_at"] = now_iso()
                 self.app.db.update("assets", "id", asset_id, values)

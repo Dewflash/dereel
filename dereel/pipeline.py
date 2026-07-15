@@ -12,6 +12,11 @@ from .media import add_text_overlay, concat_segments, mix_audio_tracks, normaliz
 
 PRODUCTION_RIGHTS = {"owned_distribution", "licensed_distribution"}
 AUDIO_ROLES = {"music", "sfx", "voiceover"}
+REVIEW_ACTIONS = {
+    "approve_owned": ("approved", "owned_distribution"),
+    "approve_licensed": ("approved", "licensed_distribution"),
+    "reject": ("rejected", "blocked"),
+}
 
 
 def asset_provenance(row: dict[str, Any]) -> dict[str, Any]:
@@ -396,14 +401,39 @@ def list_assets(db: Database, view: str = "all") -> list[dict[str, Any]]:
     return [asset_view(dict(row)) for row in rows]
 
 
-def bulk_review_assets(db: Database, asset_ids: list[str], action: str) -> list[dict[str, Any]]:
-    actions = {
-        "approve_owned": ("approved", "owned_distribution"),
-        "approve_licensed": ("approved", "licensed_distribution"),
-        "reject": ("rejected", "blocked"),
-    }
-    if action not in actions:
-        raise ValueError("Unsupported bulk review action")
+def review_asset(db: Database, asset_id: str, action: str, note: str = "") -> dict[str, Any]:
+    if action not in REVIEW_ACTIONS:
+        raise ValueError("Unsupported review action")
+    next_status, next_rights = REVIEW_ACTIONS[action]
+    with db.connection() as connection:
+        row = connection.execute("SELECT * FROM assets WHERE id = ?", (asset_id,)).fetchone()
+        if not row:
+            raise KeyError("Asset not found")
+        if action != "reject" and (row["kind"] != "media" or not row["local_path"]):
+            raise ValueError("Only local media can be approved for production")
+        if action != "reject" and row["rights_status"] not in {"pending_review", "private_reference"}:
+            raise ValueError("Asset is not awaiting review")
+        if action == "reject" and row["rights_status"] == "blocked":
+            raise ValueError("Asset is already blocked")
+        timestamp = now_iso()
+        connection.execute("UPDATE assets SET status = ?, rights_status = ?, updated_at = ? WHERE id = ?", (next_status, next_rights, timestamp, asset_id))
+        connection.execute(
+            "INSERT INTO asset_reviews(id, asset_id, action, previous_rights_status, next_rights_status, previous_status, next_status, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (new_id("review"), asset_id, action, row["rights_status"], next_rights, row["status"], next_status, str(note or "")[:300], timestamp),
+        )
+    return asset_view(db.get("assets", "id", asset_id) or {})
+
+
+def list_asset_reviews(db: Database, asset_id: str, limit: int = 30) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 100))
+    with db.connection() as connection:
+        rows = connection.execute("SELECT * FROM asset_reviews WHERE asset_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?", (asset_id, limit)).fetchall()
+    return [dict(row) for row in rows]
+
+
+def bulk_review_assets(db: Database, asset_ids: list[str], action: str, note: str = "") -> list[dict[str, Any]]:
+    if action not in REVIEW_ACTIONS:
+        raise ValueError("Unsupported review action")
     normalized_ids = list(dict.fromkeys(str(asset_id).strip() for asset_id in asset_ids if str(asset_id).strip()))
     if not normalized_ids:
         raise ValueError("Select at least one asset")
@@ -423,11 +453,17 @@ def bulk_review_assets(db: Database, asset_ids: list[str], action: str) -> list[
         ]
         if invalid:
             raise ValueError(f"{len(invalid)} selected asset(s) are not awaiting review")
-        status, rights_status = actions[action]
+        status, rights_status = REVIEW_ACTIONS[action]
+        timestamp = now_iso()
         connection.execute(
             f"UPDATE assets SET status = ?, rights_status = ?, updated_at = ? WHERE id IN ({placeholders})",
-            [status, rights_status, now_iso(), *normalized_ids],
+            [status, rights_status, timestamp, *normalized_ids],
         )
+        for row in rows:
+            connection.execute(
+                "INSERT INTO asset_reviews(id, asset_id, action, previous_rights_status, next_rights_status, previous_status, next_status, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (new_id("review"), row["id"], action, row["rights_status"], rights_status, row["status"], status, str(note or "")[:300], timestamp),
+            )
         updated = connection.execute(f"SELECT * FROM assets WHERE id IN ({placeholders})", normalized_ids).fetchall()
     by_id = {row["id"]: asset_view(dict(row)) for row in updated}
     return [by_id[asset_id] for asset_id in normalized_ids]

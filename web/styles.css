@@ -170,6 +170,14 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
 .asset-flags { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 13px; align-items: start; padding-top: 8px; }
 .asset-flags > div { display: flex; flex-wrap: wrap; gap: 5px; }
 .health-detail { display: block; margin-top: 6px; color: var(--muted); font-size: 10px; line-height: 1.4; }
+.asset-review-history-control { display: flex; justify-content: flex-end; margin-top: 15px; }
+.asset-review-history { border-top: 1px solid var(--line); margin-top: 16px; padding-top: 15px; }
+.asset-review-history-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
+.asset-review-history-header strong { display: block; color: var(--text); font-size: 12px; margin-top: 4px; }
+.review-history-row { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 14px; border-top: 1px solid var(--line); padding: 10px 0; }
+.review-history-row strong { display: inline-block; }
+.review-history-row small { display: block; color: var(--muted); font-size: 10px; line-height: 1.4; margin-top: 5px; overflow-wrap: anywhere; }
+.review-history-row > div:nth-child(2) > span { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
 .inspector-form { border-left: 1px solid var(--line); padding-left: 22px; }
 .library-heading { align-items: center; }
 .library-tools { display: flex; align-items: center; justify-content: flex-end; gap: 7px; min-width: 0; }
@@ -295,6 +303,7 @@ input[type="range"] { accent-color: var(--accent); padding: 8px 0; }
   .library-tools { justify-content: stretch; margin-top: 14px; }
   .library-tools input, .library-tools select { width: auto; min-width: 0; flex: 1; }
   .inspector-grid { grid-template-columns: 1fr; }
+  .review-history-row { grid-template-columns: 1fr; gap: 5px; }
   .inspector-form { border-top: 1px solid var(--line); border-left: 0; padding-top: 18px; padding-left: 0; }
   .audio-form-row { grid-template-columns: 1fr; }
   .audio-track-grid { grid-template-columns: 1fr; }
