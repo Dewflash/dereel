@@ -983,7 +983,8 @@ class CoreModelTests(unittest.TestCase):
 
     def test_publisher_account_and_outbox_lifecycle_is_guarded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            db = Database(Path(directory) / "test.sqlite3")
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
             account_id = "account_lifecycle"
             project = create_project(db, {"name": "Release", "theme": "cats"})
             db.insert("publishing_accounts", {"id": account_id, "platform": "instagram", "label": "Old label", "status": "not_connected", "config_json": json.dumps({"connection_check": {"status": "passed", "identity": "stale"}}), "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
@@ -991,11 +992,18 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual((updated_account["label"], updated_account["config"]["instagram_user_id"]), ("Main Reels", "ig_123"))
             self.assertEqual(updated_account["connection_check"], {})
             job_id = "outbox_lifecycle"
+            output_dir = root / "output"
+            output_dir.mkdir()
+            media_path = output_dir / "instagram.mp4"
+            media_path.write_bytes(b"export")
             db.insert("publish_jobs", {"id": job_id, "project_id": project["id"], "account_id": account_id, "platform": "instagram", "status": "ready", "scheduled_for": "", "remote_id": "", "error": "", "claim_token": None, "claimed_at": None, "payload_json": "{}", "created_at": "2026-01-01T00:00:00+00:00", "updated_at": "2026-01-01T00:00:00+00:00"})
+            db.update("publish_jobs", "id", job_id, {"payload_json": json.dumps({"media_path": str(media_path), "title": "Release"})})
             with self.assertRaisesRegex(ValueError, "pending publish job"):
                 delete_publishing_account(db, account_id)
             scheduled = reschedule_publish_job(db, job_id, "2026-02-01T12:00:00+00:00")
             self.assertEqual(scheduled["scheduled_for"], "2026-02-01T12:00:00+00:00")
+            package_manifest = json.loads((output_dir / "publish-manifest.json").read_text())
+            self.assertEqual(package_manifest["jobs"][0]["scheduled_for"], "2026-02-01T12:00:00+00:00")
             cancelled = cancel_publish_job(db, job_id)
             self.assertTrue(cancelled["cancelled"])
             self.assertEqual(cancelled["status"], "cancelled")

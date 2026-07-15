@@ -565,7 +565,17 @@ def reschedule_publish_job(db: Database, job_id: str, scheduled_for: str) -> dic
         )
     if result.rowcount != 1:
         raise ValueError("Publish job is not available to reschedule")
-    return publish_job_view(db.get("publish_jobs", "id", job_id) or {})
+    job = db.get("publish_jobs", "id", job_id) or {}
+    payload = json_loads(job.get("payload_json"), {})
+    media_path_value = str(payload.get("media_path") or "") if isinstance(payload, dict) else ""
+    if media_path_value:
+        output_dir = Path(media_path_value).parent
+        if output_dir.is_dir():
+            try:
+                _write_publish_manifest(output_dir, job_id, payload, schedule)
+            except OSError:
+                pass
+    return publish_job_view(job)
 
 
 def cancel_publish_job(db: Database, job_id: str) -> dict[str, Any]:
