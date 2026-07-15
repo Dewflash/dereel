@@ -54,6 +54,7 @@ from .pipeline import (
     remove_project_asset,
     retry_failed_job,
     project_view,
+    production_health_error,
     render_project,
     review_asset,
     review_content_asset,
@@ -119,6 +120,20 @@ def runtime_diagnostics(state: Any | None = None) -> dict[str, Any]:
     if state is not None:
         diagnostics["scheduler"] = state.scheduler_diagnostics()
     return diagnostics
+
+
+def dashboard_counts(db: Database) -> dict[str, int]:
+    with db.connection() as connection:
+        ready_asset_rows = connection.execute(
+            "SELECT * FROM assets WHERE local_path IS NOT NULL AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved')"
+        ).fetchall()
+        return {
+            "assets": connection.execute("SELECT COUNT(*) FROM assets").fetchone()[0],
+            "ready_assets": sum(1 for row in ready_asset_rows if not production_health_error(dict(row))),
+            "projects": connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0],
+            "ready_projects": connection.execute("SELECT COUNT(*) FROM projects WHERE status = 'ready'").fetchone()[0],
+            "publish_queue": connection.execute("SELECT COUNT(*) FROM publish_jobs WHERE status IN ('queued', 'ready')").fetchone()[0],
+        }
 
 
 def recover_interrupted_jobs(db: Database) -> list[str]:
@@ -656,14 +671,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(runtime_diagnostics(self.app))
             return
         if path == "/api/dashboard":
+            counts = dashboard_counts(self.app.db)
             with self.app.db.connection() as connection:
-                counts = {
-                    "assets": connection.execute("SELECT COUNT(*) FROM assets").fetchone()[0],
-                    "ready_assets": connection.execute("SELECT COUNT(*) FROM assets WHERE local_path IS NOT NULL AND rights_status IN ('owned_distribution', 'licensed_distribution') AND status IN ('ready', 'approved')").fetchone()[0],
-                    "projects": connection.execute("SELECT COUNT(*) FROM projects").fetchone()[0],
-                    "ready_projects": connection.execute("SELECT COUNT(*) FROM projects WHERE status = 'ready'").fetchone()[0],
-                    "publish_queue": connection.execute("SELECT COUNT(*) FROM publish_jobs WHERE status IN ('queued', 'ready')").fetchone()[0],
-                }
                 recent_projects = [dict(row) for row in connection.execute("SELECT * FROM projects ORDER BY updated_at DESC LIMIT 6").fetchall()]
                 jobs = [dict(row) for row in connection.execute("SELECT * FROM jobs ORDER BY updated_at DESC LIMIT 8").fetchall()]
             self.send_json({"counts": counts, "recent_projects": recent_projects, "jobs": jobs})

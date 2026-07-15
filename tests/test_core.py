@@ -20,7 +20,7 @@ from dereel.scout import _host_allowed, _request_json, import_provider_asset, im
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, check_publishing_account, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_result_status, publish_tiktok_draft, publish_youtube, reschedule_publish_job, update_publishing_account, validate_export
 from dereel.config import Settings
-from dereel.server import AppState, Handler, close_multipart_files, finalize_publish_success, parse_multipart, parse_multipart_stream, recover_interrupted_jobs, runtime_diagnostics, safe_path
+from dereel.server import AppState, Handler, close_multipart_files, dashboard_counts, finalize_publish_success, parse_multipart, parse_multipart_stream, recover_interrupted_jobs, runtime_diagnostics, safe_path
 
 
 class CoreModelTests(unittest.TestCase):
@@ -1360,6 +1360,18 @@ class CoreModelTests(unittest.TestCase):
         self.assertIn("media", diagnostics)
         self.assertIn("ffmpeg", diagnostics["media"])
         self.assertEqual({provider["id"] for provider in diagnostics["providers"]}, {"pexels", "pixabay"})
+
+    def test_dashboard_ready_asset_count_matches_production_health(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            healthy_path = root / "healthy.mp4"
+            healthy_path.write_bytes(b"healthy")
+            create_asset(db, kind="media", title="Healthy", local_path=str(healthy_path), rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
+            create_asset(db, kind="media", title="Gun clip", local_path=str(root / "flagged.mp4"), rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
+            create_asset(db, kind="media", title="Missing", local_path=str(root / "missing.mp4"), rights_status="owned_distribution", metadata={"duration": 2, "width": 720, "height": 1280})
+            counts = dashboard_counts(db)
+            self.assertEqual((counts["assets"], counts["ready_assets"]), (3, 1))
 
     def test_text_style_preset_changes_drawtext_filter(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

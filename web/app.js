@@ -297,7 +297,7 @@ function renderAssetInspector() {
 }
 
 function productionAudioAssets() {
-  return state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status));
+  return state.assets.filter((asset) => String(asset.mime_type || "").startsWith("audio/") && ["owned_distribution", "licensed_distribution"].includes(asset.rights_status) && ["ready", "approved"].includes(asset.status) && !["missing", "invalid", "changed"].includes(asset.health?.status) && asset.content_risk?.status !== "flagged");
 }
 
 function audioOptions(selectedId, emptyLabel) {
