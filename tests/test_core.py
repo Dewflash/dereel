@@ -398,6 +398,33 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(result["imported"][0]["rights_status"], "pending_review")
             self.assertEqual(importer.call_args.kwargs["automation_id"], automation["id"])
 
+    def test_owned_provider_automation_records_attestation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Licensed provider", "source_mode": "provider", "provider": "pexels", "search_query": "funny cats", "default_rights": "licensed_distribution"})
+            imported = create_asset(db, kind="media", title="Provider clip", source_url="https://pexels.com/video/1", platform="pexels", local_path=str(root / "provider.mp4"), mime_type="video/mp4", rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280})
+            with patch("dereel.automation.search_provider", return_value=[{"provider": "pexels", "provider_id": "1", "download_url": "https://videos.pexels.com/clip.mp4", "source_url": "https://pexels.com/video/1", "title": "Provider clip"}]), patch("dereel.automation.import_provider_asset", return_value=imported):
+                result = scan_provider_sources(db, automation, root / "library")
+            asset = result["imported"][0]
+            self.assertEqual((asset["rights_status"], asset["status"]), ("licensed_distribution", "approved"))
+            history = list_asset_reviews(db, asset["id"])
+            self.assertEqual((history[0]["action"], history[0]["previous_rights_status"], history[0]["note"]), ("approve_licensed", "pending_review", "Automation attestation: licensed distribution"))
+
+    def test_provider_attestation_failure_cleans_up_imported_asset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            automation = create_automation(db, {"name": "Provider cleanup", "source_mode": "provider", "provider": "pexels", "search_query": "funny cats", "default_rights": "licensed_distribution"})
+            provider_path = root / "provider.mp4"
+            provider_path.write_bytes(b"provider")
+            imported = create_asset(db, kind="media", title="Provider clip", source_url="https://pexels.com/video/1", platform="pexels", local_path=str(provider_path), rights_status="pending_review", metadata={"duration": 2, "width": 720, "height": 1280})
+            with patch("dereel.automation.search_provider", return_value=[{"provider": "pexels", "provider_id": "1", "download_url": "https://videos.pexels.com/clip.mp4", "source_url": "https://pexels.com/video/1", "title": "Provider clip"}]), patch("dereel.automation.import_provider_asset", return_value=imported), patch("dereel.automation.review_asset", side_effect=RuntimeError("review database unavailable")):
+                result = scan_provider_sources(db, automation, root / "library")
+            self.assertEqual(len(result["errors"]), 1)
+            self.assertIsNone(db.get("assets", "id", imported["id"]))
+            self.assertFalse(provider_path.exists())
+
     def test_project_defaults_to_vertical_edit(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             db = Database(Path(directory) / "test.sqlite3")

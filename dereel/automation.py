@@ -359,27 +359,39 @@ def scan_provider_sources(db: Database, automation: dict[str, Any], originals_di
     duplicates: list[str] = []
     errors: list[dict[str, str]] = []
     for result in results:
+        asset: dict[str, Any] | None = None
         try:
-            imported.append(
-                import_provider_asset(
-                    db,
-                    originals_dir,
-                    {
-                        "provider": result["provider"],
-                        "download_url": result["download_url"],
-                        "source_url": result.get("source_url", ""),
-                        "title": result.get("title", "Provider import"),
-                        "tags": automation["tags"],
-                    },
-                    automation_id=automation["id"],
-                )
+            asset = import_provider_asset(
+                db,
+                originals_dir,
+                {
+                    "provider": result["provider"],
+                    "download_url": result["download_url"],
+                    "source_url": result.get("source_url", ""),
+                    "title": result.get("title", "Provider import"),
+                    "tags": automation["tags"],
+                },
+                automation_id=automation["id"],
             )
+            requested_rights = automation["default_rights"]
+            if requested_rights != "pending_review":
+                action = "approve_owned" if requested_rights == "owned_distribution" else "approve_licensed"
+                asset = review_asset(db, asset["id"], action, f"Automation attestation: {requested_rights.replace('_', ' ')}")
+            imported.append(asset)
         except ValueError as error:
+            if asset:
+                db.delete("assets", "id", asset["id"])
+                if asset.get("local_path"):
+                    Path(asset["local_path"]).unlink(missing_ok=True)
             if "matches existing asset" in str(error):
                 duplicates.append(str(result.get("title") or result.get("provider_id") or "provider result"))
             else:
                 errors.append({"file": str(result.get("title") or "provider result"), "error": str(error)[:300]})
         except Exception as error:
+            if asset:
+                db.delete("assets", "id", asset["id"])
+                if asset.get("local_path"):
+                    Path(asset["local_path"]).unlink(missing_ok=True)
             errors.append({"file": str(result.get("title") or "provider result"), "error": str(error)[:300]})
     return {"found": len(results), "imported": imported, "duplicates": duplicates, "errors": errors}
 
