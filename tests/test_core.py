@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import re
 import sqlite3
@@ -9,6 +10,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+from urllib import error as urllib_error
 from urllib.parse import parse_qs
 
 from dereel.db import Database
@@ -1660,7 +1662,7 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(list_publish_attempts(db, job_id)[0]["remote_id"], "draft:123")
             self.assertEqual((db.get("publish_jobs", "id", job_id)["status"], db.get("publish_jobs", "id", job_id)["remote_id"]), ("published", "draft:123"))
 
-    def test_youtube_upload_streams_file_body(self) -> None:
+    def test_youtube_upload_sends_resumable_byte_range(self) -> None:
         class FakeResponse:
             def __init__(self, body=b"{}", headers=None):
                 self._body, self.headers = body, headers or {}
@@ -1674,20 +1676,60 @@ class CoreModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             media = Path(directory) / "youtube.mp4"
             media.write_bytes(b"0123456789")
-            seen = []
+            requests = []
 
             def fake_urlopen(request, timeout):
-                seen.append(request)
-                if len(seen) == 1:
+                requests.append(request)
+                if len(requests) == 1:
                     return FakeResponse(headers={"Location": "https://upload.example/video"})
-                seen.append(request.data.read())
                 return FakeResponse(b'{"id":"video_1"}')
 
             with patch("dereel.publisher.urllib.request.urlopen", side_effect=fake_urlopen):
                 result = publish_youtube({"media_path": str(media)}, "token")
             self.assertEqual(result, "video_1")
-            self.assertEqual(seen[2], b"0123456789")
-            self.assertEqual(seen[1].get_header("Content-length"), "10")
+            self.assertEqual(requests[1].data, b"0123456789")
+            self.assertEqual(requests[1].get_header("Content-length"), "10")
+            self.assertEqual(requests[1].get_header("Content-range"), "bytes 0-9/10")
+
+    def test_youtube_upload_resumes_after_transient_failure(self) -> None:
+        class FakeResponse:
+            def __init__(self, body=b"{}", status=200, headers=None):
+                self._body, self.status, self.headers = body, status, headers or {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self._body
+
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "youtube.mp4"
+            media.write_bytes(b"0123456789")
+            requests = []
+            transient = urllib_error.HTTPError("https://upload.example/video", 503, "busy", {}, io.BytesIO(b"busy"))
+
+            def fake_urlopen(request, timeout):
+                requests.append(request)
+                if len(requests) == 1:
+                    return FakeResponse(headers={"Location": "https://upload.example/video"})
+                if len(requests) == 2:
+                    raise transient
+                if len(requests) == 3:
+                    return FakeResponse(status=308, headers={"Range": "bytes=0-4"})
+                return FakeResponse(b'{"id":"video_resumed"}')
+
+            with patch("dereel.publisher.urllib.request.urlopen", side_effect=fake_urlopen):
+                with patch("dereel.publisher.time.sleep") as sleep:
+                    result = publish_youtube({"media_path": str(media)}, "token")
+            transient.close()
+
+            self.assertEqual(result, "video_resumed")
+            self.assertEqual(requests[2].get_header("Content-range"), "bytes */10")
+            self.assertEqual(requests[3].get_header("Content-range"), "bytes 5-9/10")
+            sleep.assert_not_called()
 
     def test_tiktok_upload_returns_draft_id_and_uses_byte_ranges(self) -> None:
         class FakeResponse:
@@ -1724,6 +1766,46 @@ class CoreModelTests(unittest.TestCase):
             self.assertEqual(requests[0][0].full_url, "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/")
             self.assertEqual(requests[1][0].get_header("Content-range"), "bytes 0-9/10")
             self.assertEqual(requests[1][0].data, b"0123456789")
+
+    def test_tiktok_upload_retries_only_the_ranged_transfer(self) -> None:
+        class FakeResponse:
+            def __init__(self, body: bytes = b"{}", status: int = 200) -> None:
+                self._body = body
+                self.status = status
+                self.headers = {}
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self) -> bytes:
+                return self._body
+
+        with tempfile.TemporaryDirectory() as directory:
+            media = Path(directory) / "tiktok.mp4"
+            media.write_bytes(b"0123456789")
+            requests = []
+
+            def fake_urlopen(request, timeout):
+                requests.append(request)
+                if len(requests) == 1:
+                    return FakeResponse(b'{"data":{"publish_id":"publish_1","upload_url":"https://upload.example/video"},"error":{"code":"ok"}}')
+                if len(requests) == 2:
+                    raise urllib_error.URLError("temporary network failure")
+                return FakeResponse(status=201)
+
+            with patch("dereel.publisher.urllib.request.urlopen", side_effect=fake_urlopen):
+                with patch("dereel.publisher.time.sleep") as sleep:
+                    result = publish_tiktok_draft({"media_path": str(media)}, "token")
+
+            self.assertEqual(result, "draft:publish_1")
+            self.assertEqual(len(requests), 3)
+            self.assertEqual(requests[0].full_url, "https://open.tiktokapis.com/v2/post/publish/inbox/video/init/")
+            self.assertEqual(requests[1].get_header("Content-range"), "bytes 0-9/10")
+            self.assertEqual(requests[2].get_header("Content-range"), "bytes 0-9/10")
+            sleep.assert_called_once()
 
     def test_instagram_reel_uses_container_poll_and_publish_flow(self) -> None:
         class FakeResponse:

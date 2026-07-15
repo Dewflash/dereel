@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+import re
 import tempfile
 import time
 import urllib.error
@@ -29,6 +30,7 @@ PLATFORM_ENV = {
 }
 
 PUBLISH_COMPLETION_STATUSES = {"drafted", "published", "failed"}
+UPLOAD_RETRY_LIMIT = 3
 
 
 def publish_result_status(remote_id: str) -> str:
@@ -595,6 +597,53 @@ def _http_error(error: urllib.error.HTTPError) -> RuntimeError:
     return RuntimeError(f"Publisher returned HTTP {error.code}: {detail}")
 
 
+def _retryable_upload_status(status: int) -> bool:
+    return status == 429 or 500 <= status <= 599
+
+
+def _retry_delay(attempt: int, error: urllib.error.HTTPError | None = None) -> float:
+    retry_after = ""
+    if error is not None:
+        retry_after = str(error.headers.get("Retry-After") or "").strip()
+    try:
+        return min(max(float(retry_after), 0.0), 30.0) if retry_after else min(2.0 ** attempt, 8.0)
+    except ValueError:
+        return min(2.0 ** attempt, 8.0)
+
+
+def _next_offset(headers: Any) -> int | None:
+    value = str(headers.get("Range") or "").strip()
+    match = re.fullmatch(r"bytes=0-(\d+)", value)
+    return int(match.group(1)) + 1 if match else None
+
+
+def _youtube_resume_state(upload_url: str, access_token: str, file_size: int) -> tuple[int | None, dict[str, Any] | None]:
+    request = urllib.request.Request(
+        upload_url,
+        data=b"",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Content-Length": "0",
+            "Content-Range": f"bytes */{file_size}",
+        },
+        method="PUT",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            status = int(getattr(response, "status", 200))
+            if status in (200, 201):
+                result = json.loads(response.read().decode("utf-8"))
+                return None, result if isinstance(result, dict) else None
+            if status == 308:
+                return _next_offset(response.headers), None
+    except urllib.error.HTTPError as error:
+        if error.code == 308:
+            return _next_offset(error.headers), None
+    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+        pass
+    return None, None
+
+
 def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
     path = Path(payload["media_path"])
     if not path.is_file():
@@ -630,22 +679,83 @@ def publish_youtube(payload: dict[str, Any], access_token: str) -> str:
         raise _http_error(error) from error
     if not upload_url:
         raise RuntimeError("YouTube did not return a resumable upload URL")
+    chunk_size = 8 * 1024 * 1024
+    offset = 0
+    result: dict[str, Any] | None = None
     with path.open("rb") as source:
-        upload_request = urllib.request.Request(
-            upload_url,
-            data=source,
-            headers={
-                "Authorization": f"Bearer {access_token}",
-                "Content-Type": media_type,
-                "Content-Length": str(file_size),
-            },
-            method="PUT",
-        )
-        try:
-            with urllib.request.urlopen(upload_request, timeout=900) as response:
-                result = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            raise _http_error(error) from error
+        while offset < file_size:
+            source.seek(offset)
+            chunk = source.read(min(chunk_size, file_size - offset))
+            if not chunk:
+                raise RuntimeError("YouTube export ended before the upload completed")
+            end = offset + len(chunk) - 1
+            retries = 0
+            while True:
+                upload_request = urllib.request.Request(
+                    upload_url,
+                    data=chunk,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": media_type,
+                        "Content-Length": str(len(chunk)),
+                        "Content-Range": f"bytes {offset}-{end}/{file_size}",
+                    },
+                    method="PUT",
+                )
+                try:
+                    with urllib.request.urlopen(upload_request, timeout=900) as response:
+                        status = int(getattr(response, "status", 200))
+                        if status in (200, 201):
+                            candidate = json.loads(response.read().decode("utf-8"))
+                            result = candidate if isinstance(candidate, dict) else None
+                            offset = file_size
+                            break
+                        if status == 308:
+                            next_offset = _next_offset(response.headers) or end + 1
+                            if next_offset <= offset:
+                                raise RuntimeError("YouTube returned an invalid upload range")
+                            offset = min(next_offset, file_size)
+                            break
+                        if not _retryable_upload_status(status) or retries >= UPLOAD_RETRY_LIMIT:
+                            raise RuntimeError(f"YouTube upload returned HTTP {status}")
+                        retries += 1
+                        time.sleep(_retry_delay(retries - 1))
+                except urllib.error.HTTPError as error:
+                    if error.code == 308:
+                        next_offset = _next_offset(error.headers) or end + 1
+                        if next_offset <= offset:
+                            raise RuntimeError("YouTube returned an invalid upload range") from error
+                        offset = min(next_offset, file_size)
+                        break
+                    if not _retryable_upload_status(error.code) or retries >= UPLOAD_RETRY_LIMIT:
+                        raise _http_error(error) from error
+                    retries += 1
+                    remote_offset, completed = _youtube_resume_state(upload_url, access_token, file_size)
+                    if completed is not None:
+                        result = completed
+                        offset = file_size
+                        break
+                    if remote_offset is not None:
+                        offset = min(remote_offset, file_size)
+                        break
+                    time.sleep(_retry_delay(retries - 1, error))
+                except (urllib.error.URLError, TimeoutError) as error:
+                    if retries >= UPLOAD_RETRY_LIMIT:
+                        raise RuntimeError(f"YouTube upload network error: {getattr(error, 'reason', error)}") from error
+                    retries += 1
+                    remote_offset, completed = _youtube_resume_state(upload_url, access_token, file_size)
+                    if completed is not None:
+                        result = completed
+                        offset = file_size
+                        break
+                    if remote_offset is not None:
+                        offset = min(remote_offset, file_size)
+                        break
+                    time.sleep(_retry_delay(retries - 1))
+    if result is None:
+        _, result = _youtube_resume_state(upload_url, access_token, file_size)
+    if not isinstance(result, dict):
+        raise RuntimeError("YouTube upload returned no completion response")
     video_id = result.get("id")
     if not video_id:
         raise RuntimeError("YouTube upload returned no video id")
@@ -688,18 +798,33 @@ def publish_tiktok_draft(payload: dict[str, Any], access_token: str) -> str:
             if not chunk:
                 break
             end = offset + len(chunk) - 1
-            upload_request = urllib.request.Request(
-                upload_url,
-                data=chunk,
-                headers={"Content-Type": "video/mp4", "Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{total_size}"},
-                method="PUT",
-            )
-            try:
-                with urllib.request.urlopen(upload_request, timeout=900) as response:
-                    if response.status not in (200, 201, 206):
-                        raise RuntimeError(f"TikTok upload returned HTTP {response.status}")
-            except urllib.error.HTTPError as error:
-                raise _http_error(error) from error
+            retries = 0
+            while True:
+                upload_request = urllib.request.Request(
+                    upload_url,
+                    data=chunk,
+                    headers={"Content-Type": "video/mp4", "Content-Length": str(len(chunk)), "Content-Range": f"bytes {offset}-{end}/{total_size}"},
+                    method="PUT",
+                )
+                try:
+                    with urllib.request.urlopen(upload_request, timeout=900) as response:
+                        status = int(getattr(response, "status", 200))
+                        if status in (200, 201, 206):
+                            break
+                        if not _retryable_upload_status(status) or retries >= UPLOAD_RETRY_LIMIT:
+                            raise RuntimeError(f"TikTok upload returned HTTP {status}")
+                        retries += 1
+                        time.sleep(_retry_delay(retries - 1))
+                except urllib.error.HTTPError as error:
+                    if not _retryable_upload_status(error.code) or retries >= UPLOAD_RETRY_LIMIT:
+                        raise _http_error(error) from error
+                    retries += 1
+                    time.sleep(_retry_delay(retries - 1, error))
+                except (urllib.error.URLError, TimeoutError) as error:
+                    if retries >= UPLOAD_RETRY_LIMIT:
+                        raise RuntimeError(f"TikTok upload network error: {getattr(error, 'reason', error)}") from error
+                    retries += 1
+                    time.sleep(_retry_delay(retries - 1))
             offset = end + 1
     return f"draft:{publish_id}"
 
