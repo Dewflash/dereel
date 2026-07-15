@@ -21,7 +21,10 @@ from .automation import (
     delete_automation,
     due_automations,
     finish_automation,
+    create_automation_run,
+    finish_automation_run,
     list_automations,
+    list_automation_runs,
     run_automation,
     set_automation_running,
     update_automation,
@@ -92,6 +95,10 @@ def recover_interrupted_jobs(db: Database) -> list[str]:
                 connection.execute(
                     "UPDATE automations SET status = 'failed', last_error = ?, updated_at = ? WHERE id = ?",
                     (INTERRUPTED_JOB_ERROR, timestamp, row["automation_id"]),
+                )
+                connection.execute(
+                    "UPDATE automation_runs SET status = 'failed', error = ?, finished_at = ?, updated_at = ? WHERE job_id = ? AND status IN ('queued', 'running')",
+                    (INTERRUPTED_JOB_ERROR, timestamp, timestamp, row["id"]),
                 )
             recovered.append(str(row["id"]))
     return recovered
@@ -176,9 +183,11 @@ class AppState:
         return self.submit_render(create_job(self.db, project_id, "render"), project_id)
 
     def execute_automation(self, job_id: str, automation_id: str) -> None:
+        run_id = ""
         try:
             set_automation_running(self.db, automation_id)
             set_job(self.db, job_id, status="running", message="Scanning watch folder")
+            run_id = create_automation_run(self.db, automation_id, job_id)["id"]
 
             def progress(value: float, message: str) -> None:
                 set_job(self.db, job_id, status="running", progress=round(value, 3), message=message)
@@ -190,11 +199,14 @@ class AppState:
                 self.settings.output_dir,
                 progress,
             )
+            finish_automation_run(self.db, run_id, result=result)
             finish_automation(self.db, automation_id, result=result)
             if result.get("project_id"):
                 self.db.update("jobs", "id", job_id, {"project_id": result["project_id"]})
-            set_job(self.db, job_id, status="completed", progress=1, message=f"Automation {result.get('status', 'complete')}", result=result)
+            set_job(self.db, job_id, status="completed", progress=1, message=f"Automation {result.get('status', 'complete')}", result={**result, "run_id": run_id})
         except Exception as error:
+            if run_id:
+                finish_automation_run(self.db, run_id, error=str(error))
             finish_automation(self.db, automation_id, error=str(error))
             set_job(self.db, job_id, status="failed", message="Automation failed", error=str(error))
 
@@ -396,6 +408,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if path == "/api/automations":
             self.send_json({"automations": list_automations(self.app.db)})
+            return
+        match = re.fullmatch(r"/api/automations/([^/]+)/runs", path)
+        if match:
+            if not self.app.db.get("automations", "id", match.group(1)):
+                raise KeyError("Automation not found")
+            self.send_json({"runs": list_automation_runs(self.app.db, match.group(1))})
             return
         if path == "/api/publishing/accounts":
             with self.app.db.connection() as connection:

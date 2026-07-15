@@ -1,4 +1,4 @@
-const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
+const state = { assets: [], visibleAssets: [], projects: [], jobs: [], publishingJobs: [], accounts: [], automations: [], automationRuns: [], selectedAutomationId: "", platforms: [], diagnostics: {}, providerResults: [], assetFilter: "all", assetQuery: "", assetSort: "recent", selectedAssets: new Set(), inspectedAssetId: "", selectedProject: null, publishDraft: { projectId: "" }, editingAutomationId: "" };
 
 const $ = (selector, root = document) => root.querySelector(selector);
 const $$ = (selector, root = document) => [...root.querySelectorAll(selector)];
@@ -57,6 +57,16 @@ async function refresh() {
   state.accounts = accounts.accounts || [];
   state.publishingJobs = publishing.jobs || [];
   state.automations = automations.automations || [];
+  if (state.selectedAutomationId && state.automations.some((item) => item.id === state.selectedAutomationId)) {
+    try {
+      state.automationRuns = (await api(`/api/automations/${state.selectedAutomationId}/runs`)).runs || [];
+    } catch (_error) {
+      state.automationRuns = [];
+    }
+  } else {
+    state.selectedAutomationId = "";
+    state.automationRuns = [];
+  }
   state.platforms = platforms.platforms || [];
   state.diagnostics = diagnostics || {};
   renderDashboard(dashboard, state.diagnostics);
@@ -249,8 +259,35 @@ function renderAutomations() {
     const lastRun = automation.last_run_at ? `last ${escapeHtml(automation.last_run_at.replace("T", " "))}` : "never run";
     const source = automation.source_mode === "provider" ? `${automation.provider}: ${automation.search_query}` : automation.source_mode === "watch_provider" ? `${automation.watch_dir} + ${automation.provider}` : automation.watch_dir;
     const detail = `${automation.source_mode.replaceAll("_", " + ")} · ${formatInterval(automation.interval_minutes)} · ${automation.default_rights.replaceAll("_", " ")} · ${lastRun}`;
-    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(automation.name)}</strong><small>${escapeHtml(source)} · ${escapeHtml(detail)}${automation.last_error ? ` · ${escapeHtml(automation.last_error)}` : ""}</small></div>${statusPill(automation.status)}<button class="row-action" data-edit-automation="${automation.id}">Edit</button><button class="row-action" data-run-automation="${automation.id}" ${running ? "disabled" : ""}>Run</button><button class="row-action" data-toggle-automation="${automation.id}">${toggleLabel}</button><button class="row-action danger-action" data-delete-automation="${automation.id}">Delete</button></div>`;
+    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(automation.name)}</strong><small>${escapeHtml(source)} · ${escapeHtml(detail)}${automation.last_error ? ` · ${escapeHtml(automation.last_error)}` : ""}</small></div>${statusPill(automation.status)}<button class="row-action" data-inspect-automation="${automation.id}">History</button><button class="row-action" data-edit-automation="${automation.id}">Edit</button><button class="row-action" data-run-automation="${automation.id}" ${running ? "disabled" : ""}>Run</button><button class="row-action" data-toggle-automation="${automation.id}">${toggleLabel}</button><button class="row-action danger-action" data-delete-automation="${automation.id}">Delete</button></div>`;
   }).join("") : empty("No automations yet", "Create a recipe to watch a local folder and build repeatable releases.");
+  renderAutomationRuns();
+}
+
+function renderAutomationRuns() {
+  const panel = $("#automation-history-panel");
+  const automation = state.automations.find((item) => item.id === state.selectedAutomationId);
+  if (!panel || !automation) {
+    if (panel) { panel.hidden = true; panel.innerHTML = ""; }
+    return;
+  }
+  const runs = state.automationRuns || [];
+  const runRows = runs.length ? runs.map((run) => {
+    const scan = run.scan || {};
+    const scanSummary = `found ${Number(scan.found || 0)} · imported ${Number((scan.imported || []).length)} · duplicates ${Number((scan.duplicates || []).length)} · errors ${Number((scan.errors || []).length)}`;
+    const resultSummary = run.error || run.result?.message || (run.project_id ? `project ${run.project_id}` : "no project");
+    const openProject = run.project_id ? `<button class="row-action" data-project="${escapeHtml(run.project_id)}">Open project</button>` : "";
+    return `<div class="automation-row"><div class="row-icon">↻</div><div class="row-main"><strong>${escapeHtml(run.started_at.replace("T", " "))} · ${escapeHtml(run.id)}</strong><small>${escapeHtml(scanSummary)} · ${escapeHtml(resultSummary)}</small></div>${statusPill(run.status)}${openProject}</div>`;
+  }).join("") : empty("No runs yet", "Run this recipe to build its first report.");
+  panel.hidden = false;
+  panel.innerHTML = `<div class="panel-heading"><div><span class="eyebrow accent">RUN HISTORY</span><h3>${escapeHtml(automation.name)}</h3><span class="count-label">${runs.length} recorded run${runs.length === 1 ? "" : "s"}</span></div><button class="text-button" type="button" data-action="clear-automation-runs">Close</button></div><div class="automation-list">${runRows}</div>`;
+}
+
+async function inspectAutomationRuns(automationId) {
+  state.selectedAutomationId = automationId;
+  state.automationRuns = (await api(`/api/automations/${automationId}/runs`)).runs || [];
+  showView("automations");
+  renderAutomationRuns();
 }
 
 async function submitUpload(form) {
@@ -387,13 +424,14 @@ async function submitBulkReview(action) {
 
 async function handleClick(event) {
   const target = event.target.closest("button"); if (!target) return;
-  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, retryJob, editAutomation: editAutomationId } = target.dataset;
+  const { view, viewTarget, action, bulkAction, project, planProject, renderProject, approveLicensed, approveOwned, rejectAsset, inspectAsset, validateOutput, addAsset, publishProject, markPublished, runPublish, providerSave, providerImport, saveClip, toggleClip, projectId, enabled, runAutomation, toggleAutomation, deleteAutomation, retryJob, inspectAutomation, editAutomation: editAutomationId } = target.dataset;
   try {
     if (view) { showView(view); return; }
     if (viewTarget) { showView(viewTarget); return; }
     if (action === "refresh") { await refresh(); toast("Workspace refreshed"); return; }
     if (action === "select-visible") { libraryAssets().filter(isReviewableAsset).forEach((asset) => state.selectedAssets.add(asset.id)); renderAssets(); return; }
     if (action === "clear-selection") { state.selectedAssets.clear(); renderAssets(); return; }
+    if (action === "clear-automation-runs") { state.selectedAutomationId = ""; state.automationRuns = []; renderAutomationRuns(); return; }
     if (action === "close-asset-inspector") { state.inspectedAssetId = ""; renderAssets(); return; }
     if (bulkAction) { await submitBulkReview(bulkAction); return; }
     if (action === "cancel-automation") { resetAutomationForm(); return; }
@@ -402,6 +440,7 @@ async function handleClick(event) {
     if (approveLicensed) { await api(`/api/assets/${approveLicensed}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "licensed_distribution" }) }); toast("Provider license approved"); await refresh(); return; }
     if (approveOwned) { await api(`/api/assets/${approveOwned}`, { method: "PATCH", body: JSON.stringify({ status: "approved", rights_status: "owned_distribution" }) }); toast("Ownership attested"); await refresh(); return; }
     if (editAutomationId) { editAutomation(editAutomationId); return; }
+    if (inspectAutomation) { await inspectAutomationRuns(inspectAutomation); return; }
     if (runAutomation) { await api(`/api/automations/${runAutomation}/run`, { method: "POST", body: "{}" }); toast("Automation queued"); await refresh(); return; }
     if (retryJob) { await api(`/api/jobs/${retryJob}/retry`, { method: "POST", body: "{}" }); toast("Job retry queued"); await refresh(); return; }
     if (toggleAutomation) { const automation = state.automations.find((item) => item.id === toggleAutomation); if (automation) { await api(`/api/automations/${toggleAutomation}`, { method: "PATCH", body: JSON.stringify({ enabled: !automation.enabled }) }); toast(automation.enabled ? "Automation paused" : "Automation enabled"); await refresh(); } return; }

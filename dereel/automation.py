@@ -18,6 +18,7 @@ AUTOMATION_PLATFORMS = {"youtube", "instagram", "tiktok"}
 AUTOMATION_SOURCE_MODES = {"watch", "provider", "watch_provider"}
 AUTOMATION_PROVIDERS = {"pexels", "pixabay"}
 MAX_WATCH_BYTES = 800 * 1024 * 1024
+AUTOMATION_RUN_STATUSES = {"running", "idle", "no_sources", "awaiting_review", "planned", "rendered", "failed"}
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -66,6 +67,70 @@ def automation_view(row: dict[str, Any]) -> dict[str, Any]:
     result["auto_render"] = bool(result.get("auto_render"))
     result["enabled"] = bool(result.get("enabled"))
     return result
+
+
+def automation_run_view(row: dict[str, Any]) -> dict[str, Any]:
+    result = dict(row)
+    result["scan"] = json_loads(result.pop("scan_json", "{}"), {})
+    result["result"] = json_loads(result.pop("result_json", "{}"), {})
+    return result
+
+
+def create_automation_run(db: Database, automation_id: str, job_id: str) -> dict[str, Any]:
+    run_id = new_id("run")
+    now = now_iso()
+    db.insert(
+        "automation_runs",
+        {
+            "id": run_id,
+            "automation_id": automation_id,
+            "job_id": job_id,
+            "project_id": None,
+            "status": "running",
+            "scan_json": "{}",
+            "result_json": "{}",
+            "error": "",
+            "started_at": now,
+            "finished_at": None,
+            "updated_at": now,
+        },
+    )
+    return automation_run_view(db.get("automation_runs", "id", run_id) or {})
+
+
+def finish_automation_run(db: Database, run_id: str, result: dict[str, Any] | None = None, error: str = "") -> dict[str, Any]:
+    result = result or {}
+    status = "failed" if error else str(result.get("status") or "idle")
+    if status not in AUTOMATION_RUN_STATUSES:
+        status = "idle"
+    scan = result.get("scan") if isinstance(result.get("scan"), dict) else {}
+    project_id = str(result.get("project_id") or "") or None
+    now = now_iso()
+    db.update(
+        "automation_runs",
+        "id",
+        run_id,
+        {
+            "status": status,
+            "project_id": project_id,
+            "scan_json": json_dumps(scan),
+            "result_json": json_dumps(result),
+            "error": error,
+            "finished_at": now,
+            "updated_at": now,
+        },
+    )
+    return automation_run_view(db.get("automation_runs", "id", run_id) or {})
+
+
+def list_automation_runs(db: Database, automation_id: str, limit: int = 30) -> list[dict[str, Any]]:
+    limit = max(1, min(int(limit), 100))
+    with db.connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM automation_runs WHERE automation_id = ? ORDER BY started_at DESC LIMIT ?",
+            (automation_id, limit),
+        ).fetchall()
+    return [automation_run_view(dict(row)) for row in rows]
 
 
 def _validate_audio_asset(db: Database, asset_id: str, role: str) -> None:

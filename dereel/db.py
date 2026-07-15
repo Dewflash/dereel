@@ -181,6 +181,23 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS automation_runs (
+                    id TEXT PRIMARY KEY,
+                    automation_id TEXT NOT NULL REFERENCES automations(id) ON DELETE CASCADE,
+                    job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+                    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+                    status TEXT NOT NULL CHECK(status IN ('running', 'idle', 'no_sources', 'awaiting_review', 'planned', 'rendered', 'failed')),
+                    scan_json TEXT NOT NULL DEFAULT '{}',
+                    result_json TEXT NOT NULL DEFAULT '{}',
+                    error TEXT NOT NULL DEFAULT '',
+                    started_at TEXT NOT NULL,
+                    finished_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_automation_runs_automation ON automation_runs(automation_id, started_at DESC);
+                CREATE INDEX IF NOT EXISTS idx_automation_runs_job ON automation_runs(job_id);
+
                 CREATE TABLE IF NOT EXISTS publishing_accounts (
                     id TEXT PRIMARY KEY,
                     platform TEXT NOT NULL CHECK(platform IN ('youtube', 'instagram', 'tiktok')),
@@ -205,7 +222,7 @@ class Database:
                     updated_at TEXT NOT NULL
                 );
 
-                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '5');
+                INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '6');
                 """
             )
             asset_columns = {row[1] for row in connection.execute("PRAGMA table_info(assets)").fetchall()}
@@ -238,7 +255,7 @@ class Database:
                 connection.execute("ALTER TABLE jobs ADD COLUMN attempt INTEGER NOT NULL DEFAULT 1")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_automation ON jobs(automation_id)")
             connection.execute("CREATE INDEX IF NOT EXISTS idx_jobs_retry_of ON jobs(retry_of)")
-            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '5')")
+            connection.execute("INSERT OR REPLACE INTO schema_meta(key, value) VALUES ('schema_version', '6')")
 
     @staticmethod
     def row(row: sqlite3.Row | None) -> dict[str, Any] | None:
