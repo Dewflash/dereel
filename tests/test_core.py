@@ -12,7 +12,7 @@ from urllib.parse import parse_qs
 
 from dereel.db import Database
 from dereel.media import sha256_file, validate_audio, validate_video
-from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
+from dereel.pipeline import add_project_asset, audit_asset_health, bulk_review_assets, check_asset_health, create_asset, create_job, create_project, delete_project, get_project_assets, get_project_audio, list_asset_reviews, move_project_asset, plan_project, remove_project_asset, render_project, retry_failed_job, review_asset, score_asset, score_breakdown, set_job, update_project, update_project_asset, validate_project_output, validate_render_outputs
 from dereel.scout import _host_allowed
 from dereel.automation import claim_automation, create_automation, create_automation_run, due_automations, finish_automation, finish_automation_run, list_automation_runs, run_automation, scan_provider_sources, scan_watch_folder, update_automation
 from dereel.publisher import account_view, backfill_publish_integrity, begin_publish_attempt, cancel_publish_job, claim_publish_job, complete_publish_attempt, complete_publish_job, create_publish_jobs, delete_publishing_account, fail_publish_attempt, force_publish_success, list_publish_attempts, mark_publish_job, platform_capabilities, publish_instagram_reel, publish_job, publish_job_view, publish_provenance, publish_tiktok_draft, reschedule_publish_job, update_publishing_account
@@ -480,6 +480,18 @@ class CoreModelTests(unittest.TestCase):
             audio = create_asset(db, kind="media", title="Changed bed", local_path=str(audio_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4, "health": {"status": "changed", "problems": ["File fingerprint changed since import"]}})
             with self.assertRaisesRegex(ValueError, "not ready for production: media file changed since import"):
                 create_project(db, {"name": "Audio gate", "theme": "cats", "audio_tracks": [{"asset_id": audio["id"], "role": "music"}]})
+
+    def test_legacy_project_audio_settings_are_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            db = Database(root / "test.sqlite3")
+            audio_path = root / "legacy.m4a"
+            audio_path.write_bytes(b"audio")
+            audio = create_asset(db, kind="media", title="Legacy music", local_path=str(audio_path), mime_type="audio/mp4", rights_status="owned_distribution", metadata={"duration": 4})
+            project = create_project(db, {"name": "Legacy audio", "theme": "cats"})
+            db.update("projects", "id", project["id"], {"settings_json": json.dumps({"music_asset_id": audio["id"], "music_volume": 0.25})})
+            visible = get_project_audio(db, project["id"])
+            self.assertEqual([(track["role"], track["asset_id"], track["volume"]) for track in visible], [("music", audio["id"], 0.25)])
 
     def test_project_settings_update_replaces_audio_and_invalidates_old_exports(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

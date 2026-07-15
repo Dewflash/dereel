@@ -109,7 +109,28 @@ def get_project_audio(db: Database, project_id: str) -> list[dict[str, Any]]:
             """,
             (project_id,),
         ).fetchall()
-    return [dict(row) for row in rows]
+        if rows:
+            return [dict(row) for row in rows]
+        project = connection.execute("SELECT settings_json FROM projects WHERE id = ?", (project_id,)).fetchone()
+        if not project:
+            return []
+        settings = json_loads(project["settings_json"], {})
+        if not isinstance(settings, dict):
+            return []
+        legacy_tracks = [item for item in settings.get("audio_tracks", []) if isinstance(item, dict)] if isinstance(settings.get("audio_tracks"), list) else []
+        if not legacy_tracks and settings.get("music_asset_id"):
+            legacy_tracks = [{"asset_id": settings["music_asset_id"], "role": "music", "volume": settings.get("music_volume", 0.16), "start_time": 0}]
+        result: list[dict[str, Any]] = []
+        for track in legacy_tracks:
+            asset_id = str(track.get("asset_id") or "")
+            asset = connection.execute(
+                "SELECT title, local_path, mime_type, duration, rights_status, status, analysis_json, kind, source_url, platform, automation_id, fingerprint, created_at FROM assets WHERE id = ?",
+                (asset_id,),
+            ).fetchone()
+            if not asset:
+                continue
+            result.append({"project_id": project_id, "asset_id": asset_id, "role": str(track.get("role") or "music"), "volume": track.get("volume", 0.16), "start_time": track.get("start_time", 0), **dict(asset)})
+        return result
 
 
 def project_view(db: Database, row: dict[str, Any]) -> dict[str, Any]:
