@@ -463,6 +463,17 @@ class CoreModelTests(unittest.TestCase):
             paused = update_automation(db, automation["id"], {"enabled": False})
             self.assertFalse(paused["enabled"])
 
+    def test_automation_configuration_edit_rebuilds_next_project(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            db = Database(Path(directory) / "test.sqlite3")
+            automation = create_automation(db, {"name": "Recipe", "watch_dir": directory, "theme": "old theme"})
+            project = create_project(db, {"name": "Old run", "theme": "old theme"})
+            db.update("automations", "id", automation["id"], {"last_project_id": project["id"]})
+            unchanged = update_automation(db, automation["id"], {"enabled": True})
+            self.assertEqual(unchanged["last_project_id"], project["id"])
+            changed = update_automation(db, automation["id"], {"theme": "new theme"})
+            self.assertEqual(changed["last_project_id"], "")
+
     def test_owned_watch_import_records_automation_attestation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
